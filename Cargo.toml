@@ -10,6 +10,7 @@ homepage = "https://branta.pro"
 readme = "README.md"
 keywords = ["bitcoin", "lightning", "payments", "branta", "crypto"]
 categories = ["cryptography", "api-bindings", "asynchronous"]
+exclude = ["CLAUDE.md"]
 
 [dependencies]
 aes-gcm = "0.11.0"
