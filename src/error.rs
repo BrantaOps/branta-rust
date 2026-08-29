@@ -50,6 +50,11 @@ pub enum BrantaError {
     #[error("Payment has no destinations")]
     NoDestinations,
 
+    #[error(
+        "The Bitcoin address in the QR code does not match the address verified by Branta. The QR code may have been tampered with."
+    )]
+    Tampered,
+
     #[error("HTTP transport error: {0}")]
     Transport(#[from] reqwest::Error),
 
