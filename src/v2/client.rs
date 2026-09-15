@@ -1,9 +1,11 @@
 //! Raw HTTP layer. Consumers should never call this directly -- go through [`crate::v2::BrantaService`].
 //!
-//! Transcribed from `Branta/V2/Services/BrantaClient.cs`, with one deliberate, documented
-//! deviation: the upstream logo-domain-check loop uses an early `return` instead of `continue`,
-//! which means only the first payment in a GET response list is actually domain-checked. This
-//! port uses `continue` so every payment is checked -- see `CLAUDE.md`.
+//! Transcribed from `Branta/V2/Services/BrantaClient.cs`. Historical note: dotnet/js/dart/python
+//! previously had a bug in the logo-domain-check loop where an early `return` (instead of
+//! `continue`) meant only the first payment in a GET response list was actually domain-checked;
+//! this port never had that bug (it always used `continue`). All six SDKs were fixed to check
+//! every payment, and every logo-bearing field, as of the 2026-09 logo-URL validation hardening
+//! -- see `CLAUDE.md`.
 
 use async_trait::async_trait;
 use hmac::{Hmac, KeyInit, Mac};
@@ -121,20 +123,54 @@ impl BrantaClient {
         };
         let base_origin = base.origin();
 
-        for payment in payments {
-            let Some(logo_url) = payment
-                .platform_logo_url
-                .as_deref()
-                .filter(|s| !s.is_empty())
-            else {
-                continue;
+        let check = |url: Option<&str>, field: &'static str| -> Result<(), BrantaError> {
+            let Some(logo_url) = url.filter(|s| !s.is_empty()) else {
+                return Ok(());
             };
             let matches = url::Url::parse(logo_url)
                 .map(|u| u.origin() == base_origin)
                 .unwrap_or(false);
-            if !matches {
-                return Err(BrantaError::LogoUrlDomainMismatch);
+            if matches {
+                Ok(())
+            } else {
+                Err(BrantaError::LogoUrlDomainMismatch(field.to_string()))
             }
+        };
+
+        for payment in payments {
+            check(payment.platform_logo_url.as_deref(), "platform_logo_url")?;
+            check(
+                payment.platform_logo_light_url.as_deref(),
+                "platform_logo_light_url",
+            )?;
+            check(
+                payment
+                    .parent_platform
+                    .as_ref()
+                    .and_then(|p| p.logo_url.as_deref()),
+                "parent_platform.logo_url",
+            )?;
+            check(
+                payment
+                    .parent_platform
+                    .as_ref()
+                    .and_then(|p| p.logo_light_url.as_deref()),
+                "parent_platform.logo_light_url",
+            )?;
+            check(
+                payment
+                    .child_platform
+                    .as_ref()
+                    .and_then(|p| p.logo_url.as_deref()),
+                "child_platform.logo_url",
+            )?;
+            check(
+                payment
+                    .child_platform
+                    .as_ref()
+                    .and_then(|p| p.logo_light_url.as_deref()),
+                "child_platform.logo_light_url",
+            )?;
         }
         Ok(())
     }
@@ -241,6 +277,7 @@ impl BrantaClientTrait for BrantaClient {
 mod tests {
     use super::*;
     use crate::enums::BrantaServerBaseUrl;
+    use crate::models::Platform;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -332,22 +369,114 @@ mod tests {
 
         let client = client_for(&server);
         let result = client.get_payments("value", None).await;
-        assert!(matches!(result, Err(BrantaError::LogoUrlDomainMismatch)));
+        assert!(matches!(result, Err(BrantaError::LogoUrlDomainMismatch(_))));
+    }
+
+    #[tokio::test]
+    async fn get_payments_catches_mismatched_platform_logo_light_url() {
+        let server = MockServer::start().await;
+        let payments = vec![Payment {
+            platform_logo_light_url: Some("https://evil.example.com/logo-light.png".to_string()),
+            ..Default::default()
+        }];
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(payments))
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server);
+        let result = client.get_payments("value", None).await;
+        assert!(matches!(result, Err(BrantaError::LogoUrlDomainMismatch(_))));
+    }
+
+    #[tokio::test]
+    async fn get_payments_catches_mismatched_parent_platform_logo_url() {
+        let server = MockServer::start().await;
+        let body = serde_json::json!([
+            { "parent_platform": { "logo_url": "https://evil.example.com/logo.png" } }
+        ]);
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server);
+        let result = client.get_payments("value", None).await;
+        assert!(matches!(result, Err(BrantaError::LogoUrlDomainMismatch(_))));
+    }
+
+    #[tokio::test]
+    async fn get_payments_catches_mismatched_parent_platform_logo_light_url() {
+        let server = MockServer::start().await;
+        let body = serde_json::json!([
+            { "parent_platform": { "logo_light_url": "https://evil.example.com/logo-light.png" } }
+        ]);
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server);
+        let result = client.get_payments("value", None).await;
+        assert!(matches!(result, Err(BrantaError::LogoUrlDomainMismatch(_))));
+    }
+
+    #[tokio::test]
+    async fn get_payments_catches_mismatched_child_platform_logo_url() {
+        let server = MockServer::start().await;
+        let payments = vec![Payment {
+            child_platform: Some(Platform {
+                logo_url: Some("https://evil.example.com/logo.png".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }];
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(payments))
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server);
+        let result = client.get_payments("value", None).await;
+        assert!(matches!(result, Err(BrantaError::LogoUrlDomainMismatch(_))));
+    }
+
+    #[tokio::test]
+    async fn get_payments_catches_mismatched_child_platform_logo_light_url() {
+        let server = MockServer::start().await;
+        let payments = vec![Payment {
+            child_platform: Some(Platform {
+                logo_light_url: Some("https://evil.example.com/logo-light.png".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }];
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(payments))
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server);
+        let result = client.get_payments("value", None).await;
+        assert!(matches!(result, Err(BrantaError::LogoUrlDomainMismatch(_))));
     }
 
     #[tokio::test]
     async fn get_payments_passes_when_logos_match_or_are_absent() {
         let server = MockServer::start().await;
         let matching_logo = format!("{}/logo.png", server.uri());
-        let payments = vec![
-            Payment::default(),
-            Payment {
-                platform_logo_url: Some(matching_logo),
-                ..Default::default()
+        let matching_logo_light = format!("{}/logo-light.png", server.uri());
+        let body = serde_json::json!([
+            {},
+            {
+                "platform_logo_url": matching_logo,
+                "platform_logo_light_url": matching_logo_light,
+                "parent_platform": { "logo_url": matching_logo, "logo_light_url": matching_logo_light },
+                "child_platform": { "logo_url": matching_logo, "logo_light_url": matching_logo_light },
             },
-        ];
+        ]);
         Mock::given(method("GET"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(payments))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
             .mount(&server)
             .await;
 

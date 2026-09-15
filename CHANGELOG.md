@@ -7,8 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Breaking:** `BrantaError::LogoUrlDomainMismatch` changed from a unit variant to `LogoUrlDomainMismatch(String)`, carrying the name of the field that failed the origin check (e.g. `platform_logo_url`, `parent_platform.logo_url`). Code matching `BrantaError::LogoUrlDomainMismatch` must change to `BrantaError::LogoUrlDomainMismatch(_)` (or bind the field name).
+
 ### Fixed
 - `get_payments_by_qr_code` now verifies that the plaintext Bitcoin address parsed from a scanned QR code matches the address decrypted via `branta_id`/`branta_secret`, returning `Err(BrantaError::Tampered)` on mismatch. Closes a gap where an attacker could swap the visible address in a `bitcoin:` URI while leaving a legitimate, verified `branta_id`/`branta_secret` pair untouched (ported from `branta-js` 3.2.1). This is the one deliberate exception to `decrypt_destinations`'s otherwise-total swallow-all-decrypt-errors rule.
+- `BrantaClient::verify_logo_urls` now also checks `platform_logo_light_url` and `parent_platform`/`child_platform`'s `logo_url`/`logo_light_url` against the configured base URL's origin, not just `platform_logo_url`. Matches the sibling SDKs' README rendering guidance, which has always covered these fields.
 
 ## [3.2.0] - 2026-07-25
 

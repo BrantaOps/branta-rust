@@ -35,8 +35,8 @@ pub enum BrantaError {
     #[error("destination type {0:?} does not support ZK")]
     UnsupportedZkDestinationType(Option<DestinationType>),
 
-    #[error("platform_logo_url domain does not match the configured base_url domain")]
-    LogoUrlDomainMismatch,
+    #[error("{0} domain does not match the configured base_url domain")]
+    LogoUrlDomainMismatch(String),
 
     #[error("invalid encrypted data: too short")]
     EncryptedDataTooShort,
