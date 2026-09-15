@@ -37,7 +37,9 @@ If you are implementing this SDK in a consumer project, see the **Integration Gu
 
 ### Known cross-SDK inconsistencies (do not "fix" unilaterally — coordinate across all six repos first)
 - `branta-kotlin` serializes the BTCPay field as `btcpay_server_plugin_version`; every other SDK (including this one) uses `btc_pay_server_plugin_version`.
-- The logo-domain-check loop in `branta-dotnet`/`branta-python`'s HTTP client has an early-`return` bug that only checks the first payment in a GET response list. This Rust port deliberately uses `continue` in `BrantaClient::verify_logo_urls` to check every payment — worth fixing upstream in the other SDKs too, but not this repo's job to do unilaterally.
+
+### Logo-URL domain validation
+`BrantaClient::verify_logo_urls` checks every payment in a GET response (never just the first), and every logo-bearing field: `platform_logo_url`, `platform_logo_light_url`, `parent_platform.logo_url`/`logo_light_url`, and `child_platform.logo_url`/`logo_light_url`. A mismatch returns `BrantaError::LogoUrlDomainMismatch(field)`, naming the offending field. Historical note: dotnet/js/dart/python previously had an early-`return`-instead-of-`continue` bug here that only checked the first payment, and all six SDKs previously checked only `platform_logo_url`; both gaps were closed across the sextet in the 2026-09 logo-URL validation hardening. This Rust port never had the `return`/`continue` bug (it always used `continue`).
 
 ### Conventions
 - Public API is flat at the crate root (`branta::BrantaService`, etc.) and also available under `branta::v2::*`.
