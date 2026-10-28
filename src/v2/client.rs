@@ -52,6 +52,9 @@ pub trait BrantaClientTrait: Send + Sync {
 pub struct BrantaClient {
     http: reqwest::Client,
     default_options: BrantaClientOptions,
+    /// Sent on payment lookups when set. Live integration tests pass
+    /// `BRANTA_INTEGRATION_METRICS_TOKEN` so Guardrail can leave that traffic out of GET metrics.
+    integration_metrics_token: Option<String>,
     /// Test-only escape hatch: `BrantaClientOptions::base_url` is a fixed enum of real Branta
     /// servers, so integration tests against an ephemeral `wiremock` port need a way to point
     /// this client elsewhere without touching the enum or any production code path.
@@ -64,9 +67,17 @@ impl BrantaClient {
         Self {
             http: reqwest::Client::new(),
             default_options,
+            integration_metrics_token: None,
             #[cfg(test)]
             base_url_override: None,
         }
+    }
+
+    /// Attach the secret live integration tests send so Guardrail can omit those lookups
+    /// from GET metrics. An empty token sends no header.
+    pub fn with_integration_metrics_token(mut self, token: impl Into<String>) -> Self {
+        self.integration_metrics_token = Some(token.into());
+        self
     }
 
     #[cfg(test)]
@@ -186,12 +197,15 @@ impl BrantaClientTrait for BrantaClient {
         let base_url = self.base_url(options);
         let encoded = utf8_percent_encode(destination_value, PATH_SEGMENT).to_string();
 
-        let response = match self
-            .http
-            .get(format!("{base_url}/v2/payments/{encoded}"))
-            .send()
-            .await
+        let mut request = self.http.get(format!("{base_url}/v2/payments/{encoded}"));
+        if let Some(token) = self
+            .integration_metrics_token
+            .as_deref()
+            .filter(|token| !token.is_empty())
         {
+            request = request.header("X-Branta-Integration-Token", token);
+        }
+        let response = match request.send().await {
             Ok(response) => response,
             Err(_) => return Ok(Vec::new()), // never surface lookup failures
         };
@@ -482,6 +496,43 @@ mod tests {
 
         let client = client_for(&server);
         assert_eq!(client.get_payments("value", None).await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn get_payments_sends_integration_metrics_token() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(move |req: &wiremock::Request| {
+                assert_eq!(
+                    req.headers
+                        .get("X-Branta-Integration-Token")
+                        .and_then(|value| value.to_str().ok()),
+                    Some("secret")
+                );
+                ResponseTemplate::new(200).set_body_json(serde_json::json!([]))
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server).with_integration_metrics_token("secret");
+        assert!(client.get_payments("value", None).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn get_payments_omits_integration_metrics_token_when_empty() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(move |req: &wiremock::Request| {
+                assert!(!req.headers.contains_key("X-Branta-Integration-Token"));
+                ResponseTemplate::new(200).set_body_json(serde_json::json!([]))
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server).with_integration_metrics_token("");
+        assert!(client.get_payments("value", None).await.unwrap().is_empty());
     }
 
     #[tokio::test]

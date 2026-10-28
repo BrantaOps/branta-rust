@@ -7,19 +7,35 @@
 //! Python suite's env var name, not a bespoke one), since CI sets that to avoid depending on
 //! network access.
 
-use branta::{BrantaClientOptions, BrantaServerBaseUrl, BrantaService, PrivacyMode};
+use branta::v2::AesEncryptionService;
+use branta::{
+    BrantaClient, BrantaClientOptions, BrantaServerBaseUrl, BrantaService, GuidSecretGenerator,
+    PrivacyMode,
+};
 
 fn skip_integration() -> bool {
     std::env::var("BRANTA_SKIP_INTEGRATION").is_ok()
 }
 
 fn service(base_url: BrantaServerBaseUrl, privacy: PrivacyMode) -> BrantaService {
-    BrantaService::new(BrantaClientOptions {
+    let options = BrantaClientOptions {
         base_url,
         default_api_key: None,
         hmac_secret: None,
         privacy,
-    })
+    };
+    let mut client = BrantaClient::new(options.clone());
+    if let Ok(token) = std::env::var("BRANTA_INTEGRATION_METRICS_TOKEN") {
+        if !token.is_empty() {
+            client = client.with_integration_metrics_token(token);
+        }
+    }
+    BrantaService::with_deps(
+        options,
+        Box::new(client),
+        Box::new(AesEncryptionService),
+        Box::new(GuidSecretGenerator),
+    )
 }
 
 const NOT_FOUND: &str = "bitcoin:bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4";
