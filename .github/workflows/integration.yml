@@ -1,0 +1,16 @@
+name: Live integration
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 12 * * *"
+
+jobs:
+  guardrail:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Example QR codes against staging and production
+        run: cargo test --test integration_test
