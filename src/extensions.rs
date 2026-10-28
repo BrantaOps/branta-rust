@@ -14,7 +14,8 @@ pub fn is_bolt11(value: &str) -> bool {
 }
 
 pub fn is_ark(value: &str) -> bool {
-    value.to_ascii_lowercase().starts_with("ark1")
+    let lower = value.to_ascii_lowercase();
+    lower.starts_with("ark1") || lower.starts_with("tark1")
 }
 
 pub fn is_silent_payment(value: &str) -> bool {
@@ -82,6 +83,8 @@ mod tests {
     fn is_ark_case_insensitive_prefix() {
         assert!(is_ark("ark1qsomething"));
         assert!(is_ark("ARK1QSOMETHING"));
+        assert!(is_ark("tark1qsomething"));
+        assert!(is_ark("TARK1QSOMETHING"));
         assert!(!is_ark("bc1qsomething"));
     }
 
@@ -99,6 +102,10 @@ mod tests {
         assert_eq!(get_hash_zk_type("lnbc1..."), Some(DestinationType::Bolt11));
         assert_eq!(
             get_hash_zk_type("ark1..."),
+            Some(DestinationType::ArkAddress)
+        );
+        assert_eq!(
+            get_hash_zk_type("tark1..."),
             Some(DestinationType::ArkAddress)
         );
         assert_eq!(

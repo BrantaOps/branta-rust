@@ -341,6 +341,13 @@ mod tests {
     }
 
     #[test]
+    fn plain_signet_ark_address() {
+        let p = QrParser::new("tark1qqjqtest");
+        assert_eq!(p.destination(), Some("tark1qqjqtest"));
+        assert_eq!(p.destination_type(), Some(DestinationType::ArkAddress));
+    }
+
+    #[test]
     fn plain_silent_payment_sp1() {
         let p = QrParser::new("sp1qqwl5p9jhz0000h5zkvlf9gfqv9dl9qjp5ggq5x3fw");
         assert_eq!(p.destination_type(), Some(DestinationType::SilentPayment));
