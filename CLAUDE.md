@@ -16,12 +16,12 @@ If you are implementing this SDK in a consumer project, see the **Integration Gu
   - `encryption.rs` — AES-256-GCM encrypt/decrypt (`AesEncryptionTrait`/`AesEncryptionService`).
   - `secret_generator.rs` — `SecretGeneratorTrait`/`GuidSecretGenerator`.
 - `examples/branta_example.rs` — runnable end-to-end demo; README code samples are copied from this, not hand-written independently.
-- `tests/integration_test.rs` — live staging/production lookups, gated by `BRANTA_SKIP_INTEGRATION`.
+- `tests/integration_test.rs` — live staging/production lookups, skipped unless `BRANTA_RUN_INTEGRATION=1`.
 
 ### Build / test / release
 - Build: `cargo build`
-- Test: `cargo test` (unit tests + the mocked `BrantaService` suite + integration tests — the latter hit real network by default)
-- Skip integration tests: `BRANTA_SKIP_INTEGRATION=1 cargo test`
+- Test: `cargo test` (unit tests + the mocked `BrantaService` suite; live lookups skipped)
+- Live integration tests: `BRANTA_RUN_INTEGRATION=1 cargo test --test integration_test`
 - Lint: `cargo clippy --all-targets -- -D warnings`
 - Format: `cargo fmt --check`
 - Release: bump `version` in `Cargo.toml`, add a `CHANGELOG.md` entry, `cargo publish`
