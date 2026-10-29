@@ -297,9 +297,8 @@ pub async fn is_api_key_valid(&self, options: Option<&BrantaClientOptions>) -> R
 
 ```bash
 cargo build
-cargo test                                          # unit tests + mocked BrantaService suite
-BRANTA_SKIP_INTEGRATION=1 cargo test                # skip the live integration suite
-cargo test --test integration_test                  # integration tests only (requires network)
+cargo test                                          # unit tests; live lookups skipped
+BRANTA_RUN_INTEGRATION=1 cargo test --test integration_test   # live Guardrail lookups (opt-in)
 cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 cargo run --example branta_example

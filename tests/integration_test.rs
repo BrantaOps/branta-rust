@@ -3,9 +3,8 @@
 //! These hit real staging/production servers with the exact same example QR-code fixtures used
 //! by `branta-python`'s `tests/test_integration.py`, so a payment that resolves there resolves
 //! identically here -- genuine cross-SDK confidence rather than each SDK testing against an
-//! arbitrary payment of its own. Skipped when `BRANTA_SKIP_INTEGRATION` is set (matching the
-//! Python suite's env var name, not a bespoke one), since CI sets that to avoid depending on
-//! network access.
+//! arbitrary payment of its own. Skipped unless `BRANTA_RUN_INTEGRATION=1` — local `cargo test`
+//! and PR CI must not hit Guardrail.
 
 use branta::v2::AesEncryptionService;
 use branta::{
@@ -14,7 +13,7 @@ use branta::{
 };
 
 fn skip_integration() -> bool {
-    std::env::var("BRANTA_SKIP_INTEGRATION").is_ok()
+    std::env::var("BRANTA_RUN_INTEGRATION").ok().as_deref() != Some("1")
 }
 
 fn service(base_url: BrantaServerBaseUrl, privacy: PrivacyMode) -> BrantaService {
