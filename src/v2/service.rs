@@ -8,7 +8,8 @@
 //! and `branta_id`/`branta_secret` params, a *successful* decrypt of the ZK Bitcoin-address
 //! destination is compared against that plaintext address, and a mismatch propagates
 //! `Err(BrantaError::Tampered)` -- this is the only decrypt-path error `decrypt_destinations` is
-//! allowed to surface. Otherwise, only `add_payment`'s HTTP call and the client's logo-domain
+//! allowed to surface. `get_payments_by_qr_code` additionally drops any payment whose QR
+//! instructions did not all decrypt to a destination (see `decrypt_destinations`). Otherwise, only `add_payment`'s HTTP call and the client's logo-domain
 //! check are allowed to propagate an error out of this type.
 
 use indexmap::IndexMap;
@@ -30,13 +31,31 @@ use super::secret_generator::{GuidSecretGenerator, SecretGeneratorTrait};
 /// there.
 fn addresses_match(a: &str, b: &str) -> bool {
     fn is_bech32(v: &str) -> bool {
-        v.to_lowercase().starts_with("bc1")
+        let lower = v.to_lowercase();
+        lower.starts_with("bc1") || lower.starts_with("tb1") || lower.starts_with("bcrt1")
     }
     if is_bech32(a) && is_bech32(b) {
         a.to_lowercase() == b.to_lowercase()
     } else {
         a == b
     }
+}
+
+/// Every on-chain address in the QR (path, `bc=`, `tb=`) must agree. Returns the shared address,
+/// `None` if the QR carries none, or `Err(Tampered)` if two of them conflict.
+fn uniform_on_chain_address(parser: &QrParser) -> Result<Option<String>, BrantaError> {
+    let mut addresses = parser
+        .destinations
+        .iter()
+        .filter(|d| d.r#type == Some(DestinationType::BitcoinAddress) && !d.value.trim().is_empty())
+        .map(|d| d.value.as_str());
+    let Some(first) = addresses.next() else {
+        return Ok(None);
+    };
+    if addresses.any(|address| !addresses_match(first, address)) {
+        return Err(BrantaError::Tampered);
+    }
+    Ok(Some(first.to_string()))
 }
 
 pub struct BrantaService {
@@ -138,6 +157,21 @@ impl BrantaService {
         options: Option<&BrantaClientOptions>,
     ) -> Result<PaymentsResult, BrantaError> {
         let parser = QrParser::new(qr_text);
+        let expected_on_chain_address = uniform_on_chain_address(&parser)?;
+
+        // A payable instruction we cannot bind to a decrypted destination: never look it up, so
+        // it can never come back as verified.
+        if parser.has_unverifiable_instruction {
+            let lookup = parser
+                .on_chain_encryption_text
+                .as_deref()
+                .or_else(|| parser.destination())
+                .unwrap_or("");
+            return Ok(PaymentsResult {
+                payments: Vec::new(),
+                verify_url: self.build_verify_url(options, lookup, &IndexMap::new()),
+            });
+        }
 
         if parser.is_on_chain_zk() {
             let on_chain_text = parser.on_chain_encryption_text.clone().unwrap();
@@ -147,11 +181,7 @@ impl BrantaService {
                 .filter(|d| get_hash_zk_type(&d.value).is_some())
                 .map(|d| d.value.clone())
                 .collect();
-            let on_chain_address = parser
-                .destinations
-                .iter()
-                .find(|d| d.r#type == Some(DestinationType::BitcoinAddress))
-                .map(|d| d.value.clone());
+            let on_chain_address = expected_on_chain_address;
             return self
                 .get_payments_for_zk(
                     &on_chain_text,
@@ -193,27 +223,38 @@ impl BrantaService {
         expected_on_chain_address: Option<&str>,
         options: Option<&BrantaClientOptions>,
     ) -> Result<PaymentsResult, BrantaError> {
-        let mut payments = self.client.get_payments(lookup_value, options).await?;
+        let payments = self.client.get_payments(lookup_value, options).await?;
 
         let mut keys = IndexMap::new();
-        for payment in &mut payments {
-            self.decrypt_destinations(
-                payment,
-                lookup_value,
-                encryption_key,
-                None,
-                &mut keys,
-                expected_on_chain_address,
-            )
-            .await?;
+        let mut bound = Vec::new();
+        for mut payment in payments {
+            let on_chain_bound = self
+                .decrypt_destinations(
+                    &mut payment,
+                    lookup_value,
+                    encryption_key,
+                    None,
+                    &mut keys,
+                    expected_on_chain_address,
+                )
+                .await?;
+            let mut hashes_bound = true;
             for value in additional_hash_values {
-                self.decrypt_hash_zk_destinations(payment, value, &mut keys)
-                    .await;
+                if !self
+                    .decrypt_hash_zk_destinations(&mut payment, value, &mut keys)
+                    .await
+                {
+                    hashes_bound = false;
+                }
+            }
+            // Only a payment whose every QR instruction decrypted to a destination is a hit.
+            if on_chain_bound && hashes_bound {
+                bound.push(payment);
             }
         }
 
         Ok(PaymentsResult {
-            payments,
+            payments: bound,
             verify_url: self.build_verify_url(options, lookup_value, &keys),
         })
     }
@@ -328,6 +369,9 @@ impl BrantaService {
     /// QR's visible address was swapped while its `branta_id`/`branta_secret` were left pointing
     /// at a legitimate payment -- returns `Err(BrantaError::Tampered)` instead of trusting the
     /// decrypted value.
+    ///
+    /// Returns whether the QR's on-chain address (if any) was bound: `true` when no address was
+    /// expected, or when the BitcoinAddress destination decrypted to a matching value.
     async fn decrypt_destinations(
         &self,
         payment: &mut Payment,
@@ -336,7 +380,8 @@ impl BrantaService {
         hash_zk_type: Option<DestinationType>,
         keys: &mut IndexMap<String, String>,
         expected_on_chain_address: Option<&str>,
-    ) -> Result<(), BrantaError> {
+    ) -> Result<bool, BrantaError> {
+        let mut on_chain_bound = expected_on_chain_address.is_none();
         for i in 0..payment.destinations.len() {
             let is_zk = payment.destinations[i].is_zk;
             payment.destinations[i].is_encrypted = is_zk;
@@ -357,6 +402,7 @@ impl BrantaService {
                     if !addresses_match(&plaintext, expected) {
                         return Err(BrantaError::Tampered);
                     }
+                    on_chain_bound = true;
                 }
 
                 payment.destinations[i].value = plaintext;
@@ -380,22 +426,24 @@ impl BrantaService {
                 }
             }
         }
-        Ok(())
+        Ok(on_chain_bound)
     }
 
     /// Used only from the on-chain-ZK combined-QR path: decrypts destinations whose type matches
     /// `get_hash_zk_type(plain_value)`, keyed purely off that value's derived hash (no caller
-    /// supplied key needed).
+    /// supplied key needed). Returns whether at least one destination decrypted, i.e. whether
+    /// `plain_value` is bound to the record.
     async fn decrypt_hash_zk_destinations(
         &self,
         payment: &mut Payment,
         plain_value: &str,
         keys: &mut IndexMap<String, String>,
-    ) {
+    ) -> bool {
         let Some(hash_zk_type) = get_hash_zk_type(plain_value) else {
-            return;
+            return false;
         };
         let key = to_normalized_hash(plain_value);
+        let mut bound = false;
 
         for i in 0..payment.destinations.len() {
             if !payment.destinations[i].is_zk
@@ -411,8 +459,10 @@ impl BrantaService {
                     keys.entry(zk_id).or_insert_with(|| key.clone());
                 }
                 self.try_decrypt_metadata(payment, i, &key).await;
+                bound = true;
             }
         }
+        bound
     }
 
     /// No-op unless the destination at `index` has an `encrypted_dek`, `payment.metadata` is
@@ -1372,17 +1422,20 @@ mod tests {
         let mut client = MockBrantaClientTrait::new();
         client.expect_get_payments().returning(|_, _| {
             Ok(vec![Payment {
-                destinations: vec![zk_destination(
-                    "CIPHERTEXT",
-                    "zk-1",
-                    DestinationType::BitcoinAddress,
-                )],
+                destinations: vec![
+                    zk_destination("CIPHERTEXT", "zk-1", DestinationType::BitcoinAddress),
+                    zk_destination("LN-CIPHERTEXT", "zk-2", DestinationType::Bolt11),
+                ],
                 ..Default::default()
             }])
         });
         let mut aes = MockAesEncryptionTrait::new();
         aes.expect_decrypt()
+            .withf(|value, _| value == "CIPHERTEXT")
             .returning(|_, _| Ok("1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa".to_string()));
+        aes.expect_decrypt()
+            .withf(|value, _| value == "LN-CIPHERTEXT")
+            .returning(|_, _| Ok("lnbc1qsomething".to_string()));
         let secret_gen = MockSecretGeneratorTrait::new();
         let svc = service(loose_options(), client, aes, secret_gen);
 
@@ -1420,6 +1473,173 @@ mod tests {
         );
         let result = svc.get_payments_by_qr_code(&qr, None).await;
         assert!(matches!(result, Err(BrantaError::Tampered)));
+    }
+
+    // ---- get_payments_by_qr_code: every instruction must bind ----
+
+    const REGISTERED_ADDRESS: &str = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa";
+
+    fn btc_payment_client() -> MockBrantaClientTrait {
+        let mut client = MockBrantaClientTrait::new();
+        client.expect_get_payments().returning(|_, _| {
+            Ok(vec![Payment {
+                destinations: vec![zk_destination(
+                    "CIPHERTEXT",
+                    "zk-1",
+                    DestinationType::BitcoinAddress,
+                )],
+                ..Default::default()
+            }])
+        });
+        client
+    }
+
+    fn decrypting_aes() -> MockAesEncryptionTrait {
+        let mut aes = MockAesEncryptionTrait::new();
+        aes.expect_decrypt()
+            .returning(|_, _| Ok(REGISTERED_ADDRESS.to_string()));
+        aes
+    }
+
+    fn failing_aes() -> MockAesEncryptionTrait {
+        let mut aes = MockAesEncryptionTrait::new();
+        aes.expect_decrypt().returning(|_, _| {
+            Err(BrantaError::EncryptionFailed(
+                "auth tag mismatch".to_string(),
+            ))
+        });
+        aes
+    }
+
+    fn loose_service(client: MockBrantaClientTrait, aes: MockAesEncryptionTrait) -> BrantaService {
+        service(
+            loose_options(),
+            client,
+            aes,
+            MockSecretGeneratorTrait::new(),
+        )
+    }
+
+    #[tokio::test]
+    async fn qr_swapped_address_and_wrong_secret_returns_no_payments() {
+        let svc = loose_service(btc_payment_client(), failing_aes());
+
+        let qr =
+            format!("bitcoin:{SWAPPED_ADDRESS}?branta_id=onchain-id&branta_secret=wrong-secret");
+        let result = svc.get_payments_by_qr_code(&qr, None).await.unwrap();
+        assert!(result.payments.is_empty());
+    }
+
+    #[tokio::test]
+    async fn qr_attacker_lightning_leg_returns_no_payments() {
+        let svc = loose_service(btc_payment_client(), decrypting_aes());
+
+        let qr = format!(
+            "bitcoin:{REGISTERED_ADDRESS}?branta_id=onchain-id&branta_secret=onchain-secret&lightning=lnbc1attacker"
+        );
+        let result = svc.get_payments_by_qr_code(&qr, None).await.unwrap();
+        assert!(result.payments.is_empty());
+    }
+
+    #[tokio::test]
+    async fn qr_attacker_ark_leg_returns_no_payments() {
+        let svc = loose_service(btc_payment_client(), decrypting_aes());
+
+        let qr = format!(
+            "bitcoin:{REGISTERED_ADDRESS}?branta_id=onchain-id&branta_secret=onchain-secret&ark=ark1attacker"
+        );
+        let result = svc.get_payments_by_qr_code(&qr, None).await.unwrap();
+        assert!(result.payments.is_empty());
+    }
+
+    #[tokio::test]
+    async fn qr_bip321_bc_swap_rejects() {
+        let svc = loose_service(btc_payment_client(), decrypting_aes());
+
+        let qr = format!(
+            "bitcoin:?bc={SWAPPED_ADDRESS}&branta_id=onchain-id&branta_secret=onchain-secret"
+        );
+        let result = svc.get_payments_by_qr_code(&qr, None).await;
+        assert!(matches!(result, Err(BrantaError::Tampered)));
+    }
+
+    #[tokio::test]
+    async fn qr_bip321_bc_match_resolves() {
+        let svc = loose_service(btc_payment_client(), decrypting_aes());
+
+        let qr = format!(
+            "bitcoin:?bc={REGISTERED_ADDRESS}&branta_id=onchain-id&branta_secret=onchain-secret"
+        );
+        let result = svc.get_payments_by_qr_code(&qr, None).await.unwrap();
+        assert_eq!(result.payments.len(), 1);
+        assert_eq!(result.payments[0].destinations[0].value, REGISTERED_ADDRESS);
+        assert!(!result.payments[0].destinations[0].is_encrypted);
+    }
+
+    #[tokio::test]
+    async fn qr_path_and_bc_disagree_rejects_before_lookup() {
+        // No client expectations: any network call would panic.
+        let svc = loose_service(MockBrantaClientTrait::new(), MockAesEncryptionTrait::new());
+
+        let qr = format!(
+            "bitcoin:{REGISTERED_ADDRESS}?bc={SWAPPED_ADDRESS}&branta_id=onchain-id&branta_secret=onchain-secret"
+        );
+        let result = svc.get_payments_by_qr_code(&qr, None).await;
+        assert!(matches!(result, Err(BrantaError::Tampered)));
+    }
+
+    #[tokio::test]
+    async fn qr_pay_instruction_returns_no_payments_without_lookup() {
+        let svc = loose_service(MockBrantaClientTrait::new(), MockAesEncryptionTrait::new());
+
+        let qr = format!(
+            "bitcoin:{REGISTERED_ADDRESS}?pay=bitcoin:{SWAPPED_ADDRESS}&branta_id=onchain-id&branta_secret=onchain-secret"
+        );
+        let result = svc.get_payments_by_qr_code(&qr, None).await.unwrap();
+        assert!(result.payments.is_empty());
+        assert!(result.verify_url.contains("/v2/verify/onchain-id"));
+    }
+
+    #[tokio::test]
+    async fn qr_lno_instruction_returns_no_payments_without_lookup() {
+        let svc = loose_service(MockBrantaClientTrait::new(), MockAesEncryptionTrait::new());
+
+        let qr = format!(
+            "bitcoin:{REGISTERED_ADDRESS}?lno=lno1qqattacker&branta_id=onchain-id&branta_secret=onchain-secret"
+        );
+        let result = svc.get_payments_by_qr_code(&qr, None).await.unwrap();
+        assert!(result.payments.is_empty());
+    }
+
+    #[tokio::test]
+    async fn qr_bolt12_and_lnurl_return_no_payments_without_lookup() {
+        let svc = loose_service(MockBrantaClientTrait::new(), MockAesEncryptionTrait::new());
+
+        for qr in ["lightning:lno1qqattacker", "lightning:LNURL1DP68GURN8GHJ"] {
+            let result = svc.get_payments_by_qr_code(qr, None).await.unwrap();
+            assert!(result.payments.is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn qr_no_payable_instruction_wrong_secret_returns_encrypted_record() {
+        let svc = loose_service(btc_payment_client(), failing_aes());
+
+        let qr = "bitcoin:?branta_id=onchain-id&branta_secret=wrong-secret";
+        let result = svc.get_payments_by_qr_code(qr, None).await.unwrap();
+        assert_eq!(result.payments.len(), 1);
+        assert_eq!(result.payments[0].destinations[0].value, "CIPHERTEXT");
+        assert!(result.payments[0].destinations[0].is_encrypted);
+    }
+
+    #[tokio::test]
+    async fn qr_wrong_secret_with_matching_path_address_returns_no_payments() {
+        let svc = loose_service(btc_payment_client(), failing_aes());
+
+        let qr =
+            format!("bitcoin:{REGISTERED_ADDRESS}?branta_id=onchain-id&branta_secret=wrong-secret");
+        let result = svc.get_payments_by_qr_code(&qr, None).await.unwrap();
+        assert!(result.payments.is_empty());
     }
 
     // ---- is_api_key_valid ----

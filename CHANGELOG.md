@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security
+- `get_payments_by_qr_code` now requires every payment instruction in a QR code to match a decrypted destination before returning a payment. A swapped address with a rewritten `branta_secret`, an added `lightning`/`ark`/`sp` leg, or a conflicting `bc=`/`tb=` no longer comes back as verified. Conflicting on-chain addresses (path, `bc=`, `tb=`) return `Err(BrantaError::Tampered)`. `bolt12`, `lno=`, `pay=`, and LNURL instructions cannot be bound and return no payments without a lookup. `QrParser` gains `has_unverifiable_instruction` and now parses `bc`, `tb`, `sp`, and `lno` params (ported from `branta-js` #78).
+
 ## [3.2.3] - 2026-10-28
 
 ### Added

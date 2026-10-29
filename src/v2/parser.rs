@@ -4,7 +4,7 @@
 //! raises a parse error; unrecognized input just yields a destination with `type: None`.
 
 use crate::enums::DestinationType;
-use crate::extensions::{is_ark, is_bolt11, is_silent_payment};
+use crate::extensions::{get_hash_zk_type, is_ark, is_bolt11, is_silent_payment};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct QrDestination {
@@ -17,6 +17,8 @@ pub struct QrParser {
     pub destinations: Vec<QrDestination>,
     pub on_chain_encryption_text: Option<String>,
     pub on_chain_encryption_secret: Option<String>,
+    /// A payable instruction this SDK cannot bind to a decrypted destination.
+    pub has_unverifiable_instruction: bool,
 }
 
 impl QrParser {
@@ -53,19 +55,52 @@ impl QrParser {
             value: dest_value.to_string(),
             r#type: dest_type,
         });
+        if !dest_value.is_empty()
+            && dest_type != Some(DestinationType::BitcoinAddress)
+            && get_hash_zk_type(dest_value).is_none()
+        {
+            parser.has_unverifiable_instruction = true;
+        }
 
         let query = parse_query(extract_query(text));
 
         parser.on_chain_encryption_text = query.get("branta_id").cloned();
         parser.on_chain_encryption_secret = query.get("branta_secret").cloned();
 
-        for key in ["lightning", "bolt12", "ark", "silent_payment"] {
-            if let Some(value) = query.get(key) {
-                parser.destinations.push(QrDestination {
-                    value: value.clone(),
-                    r#type: detect_plain_text_type(value),
-                });
+        // Every payable query param becomes a destination that must bind to a decrypted one.
+        // On-chain addresses (`bc`/`tb`) are compared against the decrypted address; the rest
+        // must be hash-ZK so they can be decrypted from their own value.
+        for (key, on_chain) in [
+            ("lightning", false),
+            ("bolt12", false),
+            ("ark", false),
+            ("silent_payment", false),
+            ("bc", true),
+            ("tb", true),
+            ("sp", false),
+            ("lno", false),
+        ] {
+            let Some(value) = query.get(key) else {
+                continue;
+            };
+            let r#type = if on_chain {
+                Some(DestinationType::BitcoinAddress)
+            } else if key == "lno" && !value.is_empty() {
+                detect_plain_text_type(value).or(Some(DestinationType::Bolt12))
+            } else {
+                detect_plain_text_type(value)
+            };
+            parser.destinations.push(QrDestination {
+                value: value.clone(),
+                r#type,
+            });
+            if !value.is_empty() && !on_chain && get_hash_zk_type(value).is_none() {
+                parser.has_unverifiable_instruction = true;
             }
+        }
+        // `pay=` carries an arbitrary nested payment instruction we cannot bind at all.
+        if query.get("pay").is_some_and(|v| !v.is_empty()) {
+            parser.has_unverifiable_instruction = true;
         }
 
         parser
@@ -417,6 +452,61 @@ mod tests {
         assert_eq!(
             p.destinations[1].r#type,
             Some(DestinationType::SilentPayment)
+        );
+    }
+
+    #[test]
+    fn bip321_bc_and_tb_are_on_chain_addresses() {
+        let p = QrParser::new("bitcoin:?bc=bc1qmerchant&tb=tb1qtest");
+        assert_eq!(p.destination(), Some(""));
+        let values: Vec<&str> = p.destinations.iter().map(|d| d.value.as_str()).collect();
+        assert_eq!(values, vec!["", "bc1qmerchant", "tb1qtest"]);
+        assert_eq!(
+            p.destinations[1].r#type,
+            Some(DestinationType::BitcoinAddress)
+        );
+        assert_eq!(
+            p.destinations[2].r#type,
+            Some(DestinationType::BitcoinAddress)
+        );
+        assert!(!p.has_unverifiable_instruction);
+    }
+
+    #[test]
+    fn sp_param_adds_silent_payment() {
+        let p = QrParser::new("bitcoin:bc1qmerchant?sp=sp1qqexample");
+        assert_eq!(p.destinations[1].value, "sp1qqexample");
+        assert_eq!(
+            p.destinations[1].r#type,
+            Some(DestinationType::SilentPayment)
+        );
+        assert!(!p.has_unverifiable_instruction);
+    }
+
+    #[test]
+    fn lno_and_pay_are_unverifiable() {
+        let lno = QrParser::new("bitcoin:bc1qmerchant?lno=lno1qqexample");
+        assert_eq!(lno.destinations[1].value, "lno1qqexample");
+        assert_eq!(lno.destinations[1].r#type, Some(DestinationType::Bolt12));
+        assert!(lno.has_unverifiable_instruction);
+
+        let pay = QrParser::new("bitcoin:bc1qmerchant?pay=bitcoin:bc1qother");
+        assert!(pay.has_unverifiable_instruction);
+        let values: Vec<&str> = pay.destinations.iter().map(|d| d.value.as_str()).collect();
+        assert_eq!(values, vec!["bc1qmerchant"]);
+    }
+
+    #[test]
+    fn bolt12_and_lnurl_destinations_are_unverifiable() {
+        assert!(QrParser::new("lightning:lno1qcptest").has_unverifiable_instruction);
+        assert!(QrParser::new("lightning:LNURL1DP68GURN8GHJ").has_unverifiable_instruction);
+        assert!(
+            QrParser::new("bitcoin:bc1qmerchant?bolt12=lno1qqexample").has_unverifiable_instruction
+        );
+        assert!(!QrParser::new("lightning:lnbc100n1ptest").has_unverifiable_instruction);
+        assert!(
+            !QrParser::new("bitcoin:bc1qmerchant?lightning=lnbc100n1ptest&ark=ark1qq")
+                .has_unverifiable_instruction
         );
     }
 
