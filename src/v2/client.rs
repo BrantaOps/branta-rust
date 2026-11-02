@@ -1,4 +1,4 @@
-//! Raw HTTP layer. Consumers should never call this directly -- go through [`crate::v2::BrantaService`].
+//! Raw HTTP layer. Consumers should never call this directly -- go through [`crate::BrantaService`].
 //!
 //! Transcribed from `Branta/V2/Services/BrantaClient.cs`. Historical note: dotnet/js/dart/python
 //! previously had a bug in the logo-domain-check loop where an early `return` (instead of
@@ -14,7 +14,7 @@ use sha2::Sha256;
 
 use crate::error::BrantaError;
 use crate::models::Payment;
-use crate::options::BrantaClientOptions;
+use crate::options::BrantaApiOptions;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -34,28 +34,28 @@ pub trait BrantaClientTrait: Send + Sync {
     async fn get_payments<'a>(
         &'a self,
         destination_value: &'a str,
-        options: Option<&'a BrantaClientOptions>,
+        options: Option<&'a BrantaApiOptions>,
     ) -> Result<Vec<Payment>, BrantaError>;
 
     async fn post_payment<'a>(
         &'a self,
         payment: Payment,
-        options: Option<&'a BrantaClientOptions>,
+        options: Option<&'a BrantaApiOptions>,
     ) -> Result<Option<Payment>, BrantaError>;
 
     async fn is_api_key_valid<'a>(
         &'a self,
-        options: Option<&'a BrantaClientOptions>,
+        options: Option<&'a BrantaApiOptions>,
     ) -> Result<bool, BrantaError>;
 }
 
 pub struct BrantaClient {
     http: reqwest::Client,
-    default_options: BrantaClientOptions,
+    default_options: BrantaApiOptions,
     /// Sent on payment lookups when set. Live integration tests pass
     /// `BRANTA_INTEGRATION_METRICS_TOKEN` so Guardrail can leave that traffic out of GET metrics.
     integration_metrics_token: Option<String>,
-    /// Test-only escape hatch: `BrantaClientOptions::base_url` is a fixed enum of real Branta
+    /// Test-only escape hatch: `BrantaApiOptions::environment` is a fixed enum of real Branta
     /// servers, so integration tests against an ephemeral `wiremock` port need a way to point
     /// this client elsewhere without touching the enum or any production code path.
     #[cfg(test)]
@@ -63,7 +63,7 @@ pub struct BrantaClient {
 }
 
 impl BrantaClient {
-    pub fn new(default_options: BrantaClientOptions) -> Self {
+    pub fn new(default_options: BrantaApiOptions) -> Self {
         Self {
             http: reqwest::Client::new(),
             default_options,
@@ -86,7 +86,7 @@ impl BrantaClient {
         self
     }
 
-    fn base_url(&self, options: Option<&BrantaClientOptions>) -> String {
+    fn base_url(&self, options: Option<&BrantaApiOptions>) -> String {
         #[cfg(test)]
         if let Some(ref override_url) = self.base_url_override {
             return override_url.clone();
@@ -96,7 +96,7 @@ impl BrantaClient {
 
     fn resolve_api_key<'a>(
         &'a self,
-        options: Option<&'a BrantaClientOptions>,
+        options: Option<&'a BrantaApiOptions>,
     ) -> Result<&'a str, BrantaError> {
         self.default_options
             .get_api_key(options)
@@ -107,7 +107,7 @@ impl BrantaClient {
         &self,
         base_url: &str,
         json: &str,
-        options: Option<&BrantaClientOptions>,
+        options: Option<&BrantaApiOptions>,
     ) -> Option<(String, String)> {
         let hmac_secret = self.default_options.get_hmac_secret(options)?;
 
@@ -192,7 +192,7 @@ impl BrantaClientTrait for BrantaClient {
     async fn get_payments<'a>(
         &'a self,
         destination_value: &'a str,
-        options: Option<&'a BrantaClientOptions>,
+        options: Option<&'a BrantaApiOptions>,
     ) -> Result<Vec<Payment>, BrantaError> {
         let base_url = self.base_url(options);
         let encoded = utf8_percent_encode(destination_value, PATH_SEGMENT).to_string();
@@ -207,25 +207,25 @@ impl BrantaClientTrait for BrantaClient {
         }
         let response = match request.send().await {
             Ok(response) => response,
-            Err(_) => return Ok(Vec::new()), // never surface lookup failures
+            Err(_) => return Err(BrantaError::Incomplete),
         };
 
-        if !response.status().is_success() {
+        if response.status().as_u16() == 404 {
             return Ok(Vec::new());
+        }
+        if !response.status().is_success() {
+            return Err(BrantaError::Incomplete);
         }
 
         let bytes = match response.bytes().await {
             Ok(bytes) => bytes,
-            Err(_) => return Ok(Vec::new()),
+            Err(_) => return Err(BrantaError::Incomplete),
         };
         if bytes.is_empty() {
             return Ok(Vec::new());
         }
 
-        let payments: Vec<Payment> = match serde_json::from_slice(&bytes) {
-            Ok(payments) => payments,
-            Err(_) => return Ok(Vec::new()),
-        };
+        let payments: Vec<Payment> = serde_json::from_slice(&bytes)?;
 
         self.verify_logo_urls(&base_url, &payments)?;
 
@@ -235,7 +235,7 @@ impl BrantaClientTrait for BrantaClient {
     async fn post_payment<'a>(
         &'a self,
         payment: Payment,
-        options: Option<&'a BrantaClientOptions>,
+        options: Option<&'a BrantaApiOptions>,
     ) -> Result<Option<Payment>, BrantaError> {
         let base_url = self.base_url(options);
         let api_key = self.resolve_api_key(options)?;
@@ -271,7 +271,7 @@ impl BrantaClientTrait for BrantaClient {
 
     async fn is_api_key_valid<'a>(
         &'a self,
-        options: Option<&'a BrantaClientOptions>,
+        options: Option<&'a BrantaApiOptions>,
     ) -> Result<bool, BrantaError> {
         let base_url = self.base_url(options);
         let api_key = self.resolve_api_key(options)?;
@@ -290,13 +290,13 @@ impl BrantaClientTrait for BrantaClient {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::enums::BrantaServerBaseUrl;
+    use crate::enums::BrantaEnvironment;
     use crate::models::Platform;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    fn options() -> BrantaClientOptions {
-        BrantaClientOptions::new(BrantaServerBaseUrl::Localhost)
+    fn options() -> BrantaApiOptions {
+        BrantaApiOptions::new(BrantaEnvironment::Localhost)
     }
 
     fn client_for(server: &MockServer) -> BrantaClient {
@@ -330,10 +330,20 @@ mod tests {
             .await;
 
         let client = client_for(&server);
-        assert_eq!(
-            client.get_payments("value", None).await.unwrap(),
-            Vec::new()
-        );
+        let err = client.get_payments("value", None).await.unwrap_err();
+        assert!(matches!(err, BrantaError::Incomplete));
+    }
+
+    #[tokio::test]
+    async fn get_payments_returns_empty_on_404() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server);
+        assert!(client.get_payments("value", None).await.unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -360,10 +370,8 @@ mod tests {
             .await;
 
         let client = client_for(&server);
-        assert_eq!(
-            client.get_payments("value", None).await.unwrap(),
-            Vec::new()
-        );
+        let err = client.get_payments("value", None).await.unwrap_err();
+        assert!(matches!(err, BrantaError::Json(_)));
     }
 
     #[tokio::test]
@@ -549,7 +557,7 @@ mod tests {
             .await;
 
         let mut opts = options();
-        opts.default_api_key = Some("test-key".to_string());
+        opts.api_key = Some("test-key".to_string());
         let client = BrantaClient::new(opts).with_base_url_override(server.uri());
         client.post_payment(Payment::default(), None).await.unwrap();
     }
@@ -585,7 +593,7 @@ mod tests {
             .await;
 
         let mut opts = options();
-        opts.default_api_key = Some("test-key".to_string());
+        opts.api_key = Some("test-key".to_string());
         opts.hmac_secret = Some("shared-secret".to_string());
         let client = BrantaClient::new(opts).with_base_url_override(server.uri());
         client.post_payment(Payment::default(), None).await.unwrap();
@@ -605,7 +613,7 @@ mod tests {
             .await;
 
         let mut opts = options();
-        opts.default_api_key = Some("test-key".to_string());
+        opts.api_key = Some("test-key".to_string());
         let client = BrantaClient::new(opts).with_base_url_override(server.uri());
         client.post_payment(Payment::default(), None).await.unwrap();
     }
@@ -619,7 +627,7 @@ mod tests {
             .await;
 
         let mut opts = options();
-        opts.default_api_key = Some("test-key".to_string());
+        opts.api_key = Some("test-key".to_string());
         let client = BrantaClient::new(opts).with_base_url_override(server.uri());
         let result = client.post_payment(Payment::default(), None).await;
         assert!(matches!(
@@ -638,7 +646,7 @@ mod tests {
             .await;
 
         let mut opts = options();
-        opts.default_api_key = Some("test-key".to_string());
+        opts.api_key = Some("test-key".to_string());
         let client = BrantaClient::new(opts).with_base_url_override(server.uri());
         assert!(client.is_api_key_valid(None).await.unwrap());
     }
@@ -653,7 +661,7 @@ mod tests {
             .await;
 
         let mut opts = options();
-        opts.default_api_key = Some("test-key".to_string());
+        opts.api_key = Some("test-key".to_string());
         let client = BrantaClient::new(opts).with_base_url_override(server.uri());
         assert!(!client.is_api_key_valid(None).await.unwrap());
     }

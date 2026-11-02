@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.0.0] - 2026-11-02
+
+### Changed
+- **Breaking:** `verify` replaces `get_payments` and `get_payments_by_qr_code`. It returns `match`, `unknown`, `tampered`, or `incomplete`. A match includes payments and a verify URL. The other statuses include only the verify URL. A swapped address is `tampered`. A 404 is `unknown`. A 5xx, a 429, or no network is `incomplete`.
+- **Breaking:** `DestinationType` is `bitcoin_address`, `bolt11`, `ark_address`, and `silent_payment`. `bolt12`, LNURL, lightning addresses, and tether are not destination types. A BIP21 extra this SDK cannot encrypt makes `verify` return `unknown`.
+- **Breaking:** `PrivacyMode`, `BrantaClientOptions`, `BrantaServerBaseUrl`, `PaymentsResult`, and `PaymentBuilder::set_zk` are removed. Configure `BrantaApiOptions` with `environment`, `api_key`, and `hmac_secret`. A missing environment uses staging.
+- **Breaking:** `add_payment` encrypts a copy of every destination and leaves the caller's `Payment` plaintext. Bitcoin addresses use a caller-supplied UUID secret. bolt11, Ark, and silent payments use a key derived from the normalized value. Description is stored inside encrypted metadata. An unset TTL is omitted so Guardrail applies the 7-day default.
+- The public crate root exports `BrantaService`, `PaymentBuilder`, `BrantaApiOptions`, `BrantaEnvironment`, `DestinationType`, `VerifyStatus`, `VerifyResult`, and `AddPaymentResult`.
+
 ## [3.2.4] - 2026-10-29
 
 ### Security
