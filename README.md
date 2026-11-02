@@ -1,21 +1,51 @@
 # Branta Rust SDK
 
-Rust SDK for the [Branta](https://branta.pro) V2 API. Wallets call `verify` before sending. Platforms call `add_payment` so a wallet can verify the destination.
+Rust SDK for the [Branta](https://developer.branta.pro) V2 API.
 
-Status handling and parent platforms are in the [developer docs](https://developer.branta.pro).
+Use `verify` on send and `add_payment` on receive. Status handling and parent platforms are in the [developer docs](https://developer.branta.pro).
 
-# Requirements
+## Requirements
 
-- Rust 1.75 or higher
-- [Tokio](https://tokio.rs)
+Rust 1.75 or higher, with [Tokio](https://tokio.rs).
 
-# Installation
+## Install
 
 ```bash
 cargo add branta
 ```
 
-# Quick start
+## Send
+
+```rust
+use branta::{BrantaApiOptions, BrantaEnvironment, BrantaService};
+
+let service = BrantaService::new(
+    BrantaApiOptions::new(BrantaEnvironment::Production), // Staging everywhere else
+);
+
+let result = service.verify(input, None).await?; // scanned QR or pasted text
+
+match result.status {
+    branta::VerifyStatus::Match => {
+        // Show the card for result.payments[0]. Link it to result.verify_url.
+    }
+    branta::VerifyStatus::Unknown => {
+        // Not in Branta. Show nothing.
+    }
+    branta::VerifyStatus::Tampered => {
+        // Destination was altered. Warn. Do not show a verified card.
+    }
+    branta::VerifyStatus::Incomplete => {
+        // 5xx, 429, or unreachable. Tell the user. Do not treat this as unknown.
+    }
+}
+```
+
+On-chain Bitcoin needs a `bitcoin:` URI with `branta_id` and `branta_secret`. bolt11, Ark, and silent payments resolve from the value. A bare address, including testnet `tb1` and `bcrt1`, is `unknown`.
+
+A 404 is `unknown`. A 5xx, a 429, or no network is `incomplete`.
+
+## Receive
 
 ```rust
 use branta::{
@@ -23,42 +53,29 @@ use branta::{
 };
 
 let mut options = BrantaApiOptions::new(BrantaEnvironment::Production);
-options.api_key = Some(std::env::var("BRANTA_API_KEY").unwrap());
+options.api_key = Some("<api-key>".into());
 let service = BrantaService::new(options);
 
-// Send: one call for a scan or a paste.
-let result = service.verify(scanned_or_pasted, None).await?;
-match result.status {
-    branta::VerifyStatus::Match => {
-        // Show the platform card and link result.verify_url.
-        // Read result.payments[0].platform and .description.
-    }
-    branta::VerifyStatus::Tampered => {
-        // Warn. Do not show a verified card.
-    }
-    branta::VerifyStatus::Unknown | branta::VerifyStatus::Incomplete => {
-        // Show nothing.
-    }
-}
-
-// Receive.
 let payment = PaymentBuilder::new()
-    .set_description("Order 1042")
-    .add_destination(address, Some(DestinationType::BitcoinAddress))
+    .set_description("Invoice #12345")
+    .add_destination("bc1q…", Some(DestinationType::BitcoinAddress))
+    .set_ttl(600) // seconds
     .build();
-let registered = service.add_payment(&payment, None).await?;
-// Store registered.secret with the invoice. Link registered.verify_url.
+
+let added = service.add_payment(&payment, None).await?;
 ```
 
-A missing environment uses staging. Pass `BrantaEnvironment::Production` only in production.
+`add_payment` encrypts a copy. The `Payment` you pass in stays plaintext, so a failed post can be retried.
 
-`verify` returns `unknown` for an address Branta has not seen, including a raw on-chain address. `incomplete` means the lookup did not finish (5xx, 429, or no network). `tampered` means a destination decrypted to a different value than the one that was scanned.
+Store `added.secret` with the invoice. Put `branta_id` and `branta_secret` on the invoice QR. `added.verify_url` is the link for the wallet.
 
-`add_payment` encrypts a copy. The `Payment` you built stays plaintext, so a failed post can be retried. Bitcoin addresses use the returned secret. bolt11, Ark, and silent-payment destinations use a key derived from the value. An unset TTL is left off the request so the server applies its 7-day default.
+A parent platform with one shared key sets `api_key` on the service and calls `set_child_platform` for each payment. That is the path for new parent platforms. The deprecated per-client HMAC path is in the developer docs.
 
-Parent platforms that share one API key call `PaymentBuilder::set_child_platform`. Per-client HMAC keys are still accepted on `BrantaApiOptions.hmac_secret`.
+## Destination types
 
-# Development
+`add_payment` accepts `bitcoin_address`, `bolt11`, `ark_address`, and `silent_payment`. Bitcoin addresses use the returned secret. bolt11, Ark, and silent payments use a key derived from the lowercased value, so the same input always produces the same lookup token.
+
+## Development
 
 ```bash
 cargo test
