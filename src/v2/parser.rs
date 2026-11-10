@@ -4,13 +4,15 @@ use std::collections::HashMap;
 
 use percent_encoding::percent_decode_str;
 
-use crate::enums::DestinationType;
+use crate::enums::{DestinationType, POLYGON_EVM_DESTINATION_TYPES};
 use crate::extensions::{derived_key_type, is_ark, is_bolt11, is_silent_payment};
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct QrDestination {
     pub value: String,
     pub r#type: Option<DestinationType>,
+    /// Visible address that participates in the secret-key swap check.
+    pub secret_key: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -19,6 +21,8 @@ pub(crate) struct QrParser {
     pub on_chain_encryption_text: String,
     pub on_chain_encryption_secret: String,
     pub has_unverifiable_instruction: bool,
+    /// Destination types verify may bind for this QR's scheme (match-if-any).
+    pub expected_secret_key_types: Vec<DestinationType>,
 }
 
 impl QrParser {
@@ -29,21 +33,39 @@ impl QrParser {
             on_chain_encryption_text: String::new(),
             on_chain_encryption_secret: String::new(),
             has_unverifiable_instruction: false,
+            expected_secret_key_types: Vec::new(),
         };
 
         let Some(scheme) = uri_scheme(&text) else {
             parser.destinations.push(QrDestination {
                 r#type: detect_plain_text_type(&text),
                 value: text,
+                secret_key: false,
             });
             return parser;
         };
 
         let scheme_lower = scheme.to_ascii_lowercase();
+        if scheme_lower == "pol" {
+            let dest_value = extract_destination(&text);
+            parser.destinations.push(QrDestination {
+                value: dest_value,
+                r#type: None,
+                secret_key: true,
+            });
+            parser.expected_secret_key_types = POLYGON_EVM_DESTINATION_TYPES.to_vec();
+            let query = parse_query(&extract_query(&text));
+            parser.on_chain_encryption_text = query.get("branta_id").cloned().unwrap_or_default();
+            parser.on_chain_encryption_secret =
+                query.get("branta_secret").cloned().unwrap_or_default();
+            return parser;
+        }
+
         if scheme_lower != "bitcoin" && scheme_lower != "lightning" {
             parser.destinations.push(QrDestination {
                 value: text,
                 r#type: None,
+                secret_key: false,
             });
             return parser;
         }
@@ -63,6 +85,7 @@ impl QrParser {
         parser.destinations.push(QrDestination {
             value: dest_value,
             r#type: dest_type,
+            secret_key: dest_type == Some(DestinationType::BitcoinAddress),
         });
 
         let query = parse_query(&extract_query(&text));
@@ -80,23 +103,35 @@ impl QrParser {
             };
             if !value.is_empty() && !on_chain && derived_key_type(value).is_none() {
                 parser.has_unverifiable_instruction = true;
+                return;
             }
             parser.destinations.push(QrDestination {
                 value: value.clone(),
                 r#type: dest_type,
+                secret_key: on_chain,
             });
         };
 
         add_bindable("lightning", false);
-        add_bindable("bolt12", false);
         add_bindable("ark", false);
         add_bindable("silent_payment", false);
         add_bindable("bc", true);
         add_bindable("tb", true);
         add_bindable("sp", false);
-        add_bindable("lno", false);
+        if query.contains_key("bolt12") {
+            parser.has_unverifiable_instruction = true;
+        }
+        if query.contains_key("lno") {
+            parser.has_unverifiable_instruction = true;
+        }
         if query.get("pay").is_some_and(|value| !value.is_empty()) {
             parser.has_unverifiable_instruction = true;
+        }
+        // Legacy: bare `bolt12` / `lno` values without a bindable type still mark unverifiable
+        // via the contains_key checks above; do not push them as destinations.
+
+        if parser.destinations.iter().any(|d| d.secret_key) {
+            parser.expected_secret_key_types = vec![DestinationType::BitcoinAddress];
         }
         parser
     }
@@ -241,5 +276,44 @@ mod tests {
         assert!(QrParser::new("bitcoin:bc1qmerchant?lno=lno1offer").has_unverifiable_instruction);
         assert!(QrParser::new("lightning:LNURL1DP68GURN8GHJ").has_unverifiable_instruction);
         assert!(QrParser::new("lno1offer").destinations[0].r#type.is_none());
+    }
+
+    #[test]
+    fn pol_uri_is_secret_key_without_token_type() {
+        let parser = QrParser::new(
+            "pol:0x278297528c32eCa01295B0d2135984d3442ec963?value=50&branta_id=enc&branta_secret=sec",
+        );
+        assert_eq!(
+            parser.destination(),
+            Some("0x278297528c32eCa01295B0d2135984d3442ec963")
+        );
+        assert!(parser.destinations[0].r#type.is_none());
+        assert!(parser.destinations[0].secret_key);
+        assert_eq!(parser.on_chain_encryption_text, "enc");
+        assert_eq!(parser.on_chain_encryption_secret, "sec");
+        assert_eq!(
+            parser.expected_secret_key_types,
+            vec![DestinationType::UsdtPolygon, DestinationType::UsdcPolygon]
+        );
+    }
+
+    #[test]
+    fn bitcoin_uri_expects_bitcoin_secret_key_family() {
+        let parser = QrParser::new("bitcoin:bc1qmerchant?branta_id=enc&branta_secret=sec");
+        assert!(parser.destinations[0].secret_key);
+        assert_eq!(
+            parser.expected_secret_key_types,
+            vec![DestinationType::BitcoinAddress]
+        );
+    }
+
+    #[test]
+    fn unrecognized_scheme_is_opaque_text() {
+        let parser = QrParser::new("ethereum:0xabc?value=1");
+        assert_eq!(parser.destination(), Some("ethereum:0xabc?value=1"));
+        assert!(parser.destinations[0].r#type.is_none());
+        assert!(!parser.destinations[0].secret_key);
+        assert!(parser.expected_secret_key_types.is_empty());
+        assert!(!parser.is_on_chain_zk());
     }
 }

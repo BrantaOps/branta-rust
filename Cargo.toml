@@ -1,6 +1,6 @@
 [package]
 name = "branta"
-version = "4.0.0"
+version = "4.2.0"
 edition = "2021"
 rust-version = "1.75"
 license = "MIT"
@@ -31,6 +31,7 @@ uuid = { version = "1.24.0", features = ["v4"] }
 
 [dev-dependencies]
 mockall = "0.13.1"
+percent-encoding = "2.3.2"
 tokio-test = "0.4.5"
 wiremock = "0.6.5"
 

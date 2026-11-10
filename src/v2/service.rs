@@ -12,10 +12,10 @@ use indexmap::IndexMap;
 use percent_encoding::utf8_percent_encode;
 use uuid::Uuid;
 
-use crate::enums::{DestinationType, VerifyStatus};
+use crate::enums::{is_secret_key_address_type, DestinationType, VerifyStatus};
 use crate::error::BrantaError;
 use crate::extensions::{derived_key_type, to_normalized_hash, to_url_fragment};
-use crate::models::{AddPaymentResult, Payment, VerifyResult};
+use crate::models::{AddPaymentResult, Destination, Payment, VerifyResult};
 use crate::options::BrantaApiOptions;
 
 use super::client::{BrantaClient, BrantaClientTrait, PATH_SEGMENT};
@@ -34,19 +34,21 @@ fn addresses_match(a: &str, b: &str) -> bool {
         let lower = value.to_ascii_lowercase();
         lower.starts_with("bc1") || lower.starts_with("tb1") || lower.starts_with("bcrt1")
     }
-    if is_bech32(a) && is_bech32(b) {
+    let case_insensitive =
+        (is_bech32(a) && is_bech32(b)) || (a.starts_with("0x") && b.starts_with("0x"));
+    if case_insensitive {
         a.eq_ignore_ascii_case(b)
     } else {
         a == b
     }
 }
 
-/// Every on-chain address in the QR must agree. `None` means the QR has none.
+/// Every secret-key address in the QR must agree. `None` means the QR has none.
 fn uniform_on_chain_address(parser: &QrParser) -> Result<Option<String>, LookupFail> {
-    let mut addresses = parser.destinations.iter().filter(|destination| {
-        destination.r#type == Some(DestinationType::BitcoinAddress)
-            && !destination.value.trim().is_empty()
-    });
+    let mut addresses = parser
+        .destinations
+        .iter()
+        .filter(|destination| destination.secret_key && !destination.value.trim().is_empty());
     let Some(first) = addresses.next() else {
         return Ok(None);
     };
@@ -56,19 +58,40 @@ fn uniform_on_chain_address(parser: &QrParser) -> Result<Option<String>, LookupF
     Ok(Some(first.value.clone()))
 }
 
+fn matched_destinations_from(payments: &[Payment]) -> Vec<Destination> {
+    payments
+        .iter()
+        .flat_map(|payment| payment.destinations.iter())
+        .filter(|destination| !destination.is_encrypted)
+        .cloned()
+        .collect()
+}
+
 fn to_verify_result(payments: Vec<Payment>, verify_url: String) -> VerifyResult {
     if payments.is_empty() {
         VerifyResult {
             status: VerifyStatus::Unknown,
             payments,
             verify_url,
+            matched_destinations: Vec::new(),
         }
     } else {
+        let matched_destinations = matched_destinations_from(&payments);
         VerifyResult {
             status: VerifyStatus::Match,
             payments,
             verify_url,
+            matched_destinations,
         }
+    }
+}
+
+fn status_only(status: VerifyStatus, verify_url: String) -> VerifyResult {
+    VerifyResult {
+        status,
+        payments: Vec::new(),
+        verify_url,
+        matched_destinations: Vec::new(),
     }
 }
 
@@ -137,16 +160,14 @@ impl BrantaService {
         let lookup = self.scanned_lookup(&parser);
         match self.verify_parsed(&parser, options).await {
             Ok(result) => Ok(result),
-            Err(LookupFail::Tampered) => Ok(VerifyResult {
-                status: VerifyStatus::Tampered,
-                payments: Vec::new(),
-                verify_url: self.build_verify_url(options, &lookup, &IndexMap::new()),
-            }),
-            Err(LookupFail::Incomplete) => Ok(VerifyResult {
-                status: VerifyStatus::Incomplete,
-                payments: Vec::new(),
-                verify_url: self.build_verify_url(options, &lookup, &IndexMap::new()),
-            }),
+            Err(LookupFail::Tampered) => Ok(status_only(
+                VerifyStatus::Tampered,
+                self.build_verify_url(options, &lookup, &IndexMap::new()),
+            )),
+            Err(LookupFail::Incomplete) => Ok(status_only(
+                VerifyStatus::Incomplete,
+                self.build_verify_url(options, &lookup, &IndexMap::new()),
+            )),
             Err(LookupFail::Other(err)) => Err(err),
         }
     }
@@ -168,11 +189,10 @@ impl BrantaService {
         let lookup = self.scanned_lookup(parser);
 
         if parser.has_unverifiable_instruction {
-            return Ok(VerifyResult {
-                status: VerifyStatus::Unknown,
-                payments: Vec::new(),
-                verify_url: self.build_verify_url(options, &lookup, &IndexMap::new()),
-            });
+            return Ok(status_only(
+                VerifyStatus::Unknown,
+                self.build_verify_url(options, &lookup, &IndexMap::new()),
+            ));
         }
 
         if parser.is_on_chain_zk() {
@@ -183,11 +203,10 @@ impl BrantaService {
                 .map(|destination| destination.value.clone())
                 .collect();
             if expected_on_chain.is_none() && additional.is_empty() {
-                return Ok(VerifyResult {
-                    status: VerifyStatus::Unknown,
-                    payments: Vec::new(),
-                    verify_url: self.build_verify_url(options, &lookup, &IndexMap::new()),
-                });
+                return Ok(status_only(
+                    VerifyStatus::Unknown,
+                    self.build_verify_url(options, &lookup, &IndexMap::new()),
+                ));
             }
             let (payments, verify_url) = self
                 .lookup_by_branta_id(
@@ -195,6 +214,7 @@ impl BrantaService {
                     &parser.on_chain_encryption_secret,
                     &additional,
                     expected_on_chain.as_deref(),
+                    &parser.expected_secret_key_types,
                     options,
                 )
                 .await?;
@@ -203,11 +223,10 @@ impl BrantaService {
 
         let destination = parser.destination().unwrap_or("");
         if derived_key_type(destination).is_none() {
-            return Ok(VerifyResult {
-                status: VerifyStatus::Unknown,
-                payments: Vec::new(),
-                verify_url: self.build_verify_url(options, destination, &IndexMap::new()),
-            });
+            return Ok(status_only(
+                VerifyStatus::Unknown,
+                self.build_verify_url(options, destination, &IndexMap::new()),
+            ));
         }
 
         let (payments, verify_url) = self.lookup_by_derived_key(destination, options).await?;
@@ -220,6 +239,7 @@ impl BrantaService {
         encryption_key: &str,
         additional_hash_values: &[String],
         expected_on_chain_address: Option<&str>,
+        expected_on_chain_types: &[DestinationType],
         options: Option<&BrantaApiOptions>,
     ) -> Result<(Vec<Payment>, String), LookupFail> {
         let mut payments = self
@@ -237,6 +257,7 @@ impl BrantaService {
                     encryption_key,
                     &mut keys,
                     expected_on_chain_address,
+                    expected_on_chain_types,
                 )
                 .await?;
             let mut hashes_bound = true;
@@ -323,7 +344,7 @@ impl BrantaService {
                 destination.r#type = super::parser::detect_plain_text_type(&destination.value);
             }
 
-            if destination.r#type == Some(DestinationType::BitcoinAddress) {
+            if destination.r#type.is_some_and(is_secret_key_address_type) {
                 let ciphertext = self
                     .aes
                     .encrypt(
@@ -400,11 +421,22 @@ impl BrantaService {
         encryption_key: &str,
         keys: &mut IndexMap<String, String>,
         expected_on_chain_address: Option<&str>,
+        expected_on_chain_types: &[DestinationType],
     ) -> Result<bool, LookupFail> {
         let mut on_chain_bound = expected_on_chain_address.is_none();
+        let mut decrypted_expected_rail = false;
         for index in 0..payment.destinations.len() {
-            if !payment.destinations[index].is_encrypted
-                || payment.destinations[index].r#type != Some(DestinationType::BitcoinAddress)
+            if !payment.destinations[index].is_encrypted {
+                continue;
+            }
+            let Some(dest_type) = payment.destinations[index].r#type else {
+                continue;
+            };
+            if !is_secret_key_address_type(dest_type) {
+                continue;
+            }
+            // Outside this QR's rail family (e.g. bitcoin when scanning pol:) — leave encrypted.
+            if !expected_on_chain_types.is_empty() && !expected_on_chain_types.contains(&dest_type)
             {
                 continue;
             }
@@ -418,10 +450,12 @@ impl BrantaService {
             else {
                 continue;
             };
+            decrypted_expected_rail = true;
+            // Match-if-any within the family: a sibling rail with a different address stays encrypted.
             if expected_on_chain_address
                 .is_some_and(|expected| !addresses_match(&plaintext, expected))
             {
-                return Err(LookupFail::Tampered);
+                continue;
             }
             if expected_on_chain_address.is_some() {
                 on_chain_bound = true;
@@ -433,6 +467,10 @@ impl BrantaService {
             }
             self.try_decrypt_metadata(payment, index, encryption_key)
                 .await;
+        }
+        // Tampered only when a family rail decrypted and none matched the scanned address.
+        if expected_on_chain_address.is_some() && !on_chain_bound && decrypted_expected_rail {
+            return Err(LookupFail::Tampered);
         }
         Ok(on_chain_bound)
     }
@@ -525,6 +563,8 @@ fn destination_type_name(r#type: Option<DestinationType>) -> String {
         Some(DestinationType::Bolt11) => "bolt11",
         Some(DestinationType::ArkAddress) => "ark_address",
         Some(DestinationType::SilentPayment) => "silent_payment",
+        Some(DestinationType::UsdtPolygon) => "usdt_polygon",
+        Some(DestinationType::UsdcPolygon) => "usdc_polygon",
         None => "unknown",
     }
     .to_string()
@@ -580,20 +620,38 @@ mod tests {
 
     use super::super::encryption::encrypt;
 
+    const ADDRESS: &str = "bc1qmerchant";
+    const SECRET: &str = "branta-secret";
+    const LOOKUP: &str = "lookup-token";
+    const USDT_POLYGON: &str = "0x278297528c32eCa01295B0d2135984d3442ec963";
+    const USDC_POLYGON: &str = "0xAb5801a7D398351b8bE11C439e05C5B3259aeC9B";
+    const SIBLING_USDT: &str = "0x2222222222222222222222222222222222222222";
+    const SWAPPED_POLYGON: &str = "0x1111111111111111111111111111111111111111";
+
     struct ScriptedClient {
         payments: Mutex<Result<Vec<Payment>, bool>>,
+        posts: Mutex<Vec<Payment>>,
     }
 
     impl ScriptedClient {
         fn payments(payments: Vec<Payment>) -> Self {
             Self {
                 payments: Mutex::new(Ok(payments)),
+                posts: Mutex::new(Vec::new()),
             }
         }
 
         fn incomplete() -> Self {
             Self {
                 payments: Mutex::new(Err(true)),
+                posts: Mutex::new(Vec::new()),
+            }
+        }
+
+        fn capture() -> Self {
+            Self {
+                payments: Mutex::new(Ok(Vec::new())),
+                posts: Mutex::new(Vec::new()),
             }
         }
     }
@@ -616,8 +674,8 @@ mod tests {
             payment: Payment,
             _options: Option<&'a BrantaApiOptions>,
         ) -> Result<Option<Payment>, BrantaError> {
-            let _ = payment;
-            Ok(Some(Payment::default()))
+            self.posts.lock().unwrap().push(payment.clone());
+            Ok(Some(payment))
         }
 
         async fn is_api_key_valid<'a>(
@@ -640,12 +698,36 @@ mod tests {
         }
     }
 
+    struct PolygonSecret;
+
+    impl SecretGeneratorTrait for PolygonSecret {
+        fn generate(&self) -> String {
+            "polygon-secret".into()
+        }
+
+        fn deterministic_nonce(&self) -> bool {
+            true
+        }
+    }
+
     fn service(client: ScriptedClient) -> BrantaService {
         BrantaService::with_deps(
             BrantaApiOptions::new(BrantaEnvironment::Staging),
             Box::new(client),
             Box::new(AesEncryptionService),
             Box::new(FixedSecret),
+        )
+    }
+
+    fn service_with_secret(
+        client: ScriptedClient,
+        secret: Box<dyn SecretGeneratorTrait>,
+    ) -> BrantaService {
+        BrantaService::with_deps(
+            BrantaApiOptions::new(BrantaEnvironment::Staging),
+            Box::new(client),
+            Box::new(AesEncryptionService),
+            secret,
         )
     }
 
@@ -664,12 +746,50 @@ mod tests {
         }
     }
 
+    fn encrypted_bitcoin(address: &str, secret: &str, destination_id: &str) -> Destination {
+        Destination {
+            value: encrypt(address, secret, true).unwrap(),
+            is_primary: true,
+            is_encrypted: true,
+            r#type: Some(DestinationType::BitcoinAddress),
+            id: Some(destination_id.into()),
+            encrypted_dek: None,
+        }
+    }
+
+    fn encrypted_polygon(
+        address: &str,
+        destination_type: DestinationType,
+        secret: &str,
+        destination_id: &str,
+    ) -> Destination {
+        Destination {
+            value: encrypt(address, secret, true).unwrap(),
+            is_primary: false,
+            is_encrypted: true,
+            r#type: Some(destination_type),
+            id: Some(destination_id.into()),
+            encrypted_dek: None,
+        }
+    }
+
+    fn bitcoin_qr(address: &str, encrypted: &str, secret: &str) -> String {
+        format!("bitcoin:{address}?branta_id={encrypted}&branta_secret={secret}")
+    }
+
+    fn pol_uri(address: &str, encrypted: &str, secret: &str) -> String {
+        format!(
+            "pol:{address}?value=50&user=send&currency=USD&branta_id={encrypted}&branta_secret={secret}"
+        )
+    }
+
     #[tokio::test]
     async fn plain_address_is_unknown_without_a_lookup() {
         let svc = service(ScriptedClient::incomplete());
         let result = svc.verify("bc1qmerchant", None).await.unwrap();
         assert_eq!(result.status, VerifyStatus::Unknown);
         assert!(result.payments.is_empty());
+        assert!(result.matched_destinations.is_empty());
         assert!(result
             .verify_url
             .starts_with("https://staging.guardrail.branta.pro/v2/verify/bc1qmerchant"));
@@ -685,6 +805,7 @@ mod tests {
         let result = svc.verify(invoice, None).await.unwrap();
         assert_eq!(result.status, VerifyStatus::Match);
         assert_eq!(result.payments[0].destinations[0].value, invoice);
+        assert_eq!(result.matched_destinations.len(), 1);
         assert!(result.verify_url.contains("#k-dest-1="));
     }
 
@@ -698,6 +819,7 @@ mod tests {
         let result = svc.verify(scanned, None).await.unwrap();
         assert_eq!(result.status, VerifyStatus::Tampered);
         assert!(result.payments.is_empty());
+        assert!(result.matched_destinations.is_empty());
         assert!(!result.verify_url.contains('#'));
     }
 
@@ -730,6 +852,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn bitcoin_match_sets_matched_destinations() {
+        let dest = encrypted_bitcoin(ADDRESS, SECRET, "dest-1");
+        let ciphertext = dest.value.clone();
+        let svc = service(ScriptedClient::payments(vec![Payment {
+            destinations: vec![dest],
+            ..Payment::default()
+        }]));
+        let result = svc
+            .verify(&bitcoin_qr(ADDRESS, &ciphertext, SECRET), None)
+            .await
+            .unwrap();
+        assert_eq!(result.status, VerifyStatus::Match);
+        assert_eq!(result.matched_destinations.len(), 1);
+        assert_eq!(
+            result.matched_destinations[0].r#type,
+            Some(DestinationType::BitcoinAddress)
+        );
+        assert_eq!(result.matched_destinations[0].value, ADDRESS);
+    }
+
+    #[tokio::test]
     async fn add_payment_keeps_caller_plaintext_and_omits_unset_ttl() {
         let client = CaptureClient;
         let svc = BrantaService::with_deps(
@@ -759,6 +902,351 @@ mod tests {
         let err = svc.add_payment(&payment, None).await.unwrap_err();
         assert!(matches!(err, BrantaError::UnsupportedDestinationType(_)));
         assert_eq!(payment.destinations[0].value, "lno1offer");
+    }
+
+    #[tokio::test]
+    async fn pol_usdt_match_ignores_amount_query_and_sets_matched_destinations() {
+        let dest = encrypted_polygon(
+            USDT_POLYGON,
+            DestinationType::UsdtPolygon,
+            SECRET,
+            "zk-usdt",
+        );
+        let ciphertext = dest.value.clone();
+        let svc = service(ScriptedClient::payments(vec![Payment {
+            destinations: vec![dest],
+            ..Payment::default()
+        }]));
+        let result = svc
+            .verify(&pol_uri(USDT_POLYGON, &ciphertext, SECRET), None)
+            .await
+            .unwrap();
+        assert_eq!(result.status, VerifyStatus::Match);
+        assert_eq!(
+            result.payments[0].destinations[0].r#type,
+            Some(DestinationType::UsdtPolygon)
+        );
+        assert_eq!(result.payments[0].destinations[0].value, USDT_POLYGON);
+        assert_eq!(result.matched_destinations.len(), 1);
+        assert_eq!(
+            result.matched_destinations[0].r#type,
+            Some(DestinationType::UsdtPolygon)
+        );
+    }
+
+    #[tokio::test]
+    async fn pol_usdt_case_insensitive_match() {
+        let dest = encrypted_polygon(
+            USDT_POLYGON,
+            DestinationType::UsdtPolygon,
+            SECRET,
+            "zk-poly",
+        );
+        let ciphertext = dest.value.clone();
+        let svc = service(ScriptedClient::payments(vec![Payment {
+            destinations: vec![dest],
+            ..Payment::default()
+        }]));
+        let result = svc
+            .verify(
+                &pol_uri(&USDT_POLYGON.to_ascii_lowercase(), &ciphertext, SECRET),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.status, VerifyStatus::Match);
+    }
+
+    #[tokio::test]
+    async fn pol_usdt_swapped_is_tampered() {
+        let dest = encrypted_polygon(
+            USDT_POLYGON,
+            DestinationType::UsdtPolygon,
+            SECRET,
+            "zk-poly",
+        );
+        let ciphertext = dest.value.clone();
+        let svc = service(ScriptedClient::payments(vec![Payment {
+            destinations: vec![dest],
+            ..Payment::default()
+        }]));
+        let result = svc
+            .verify(&pol_uri(SWAPPED_POLYGON, &ciphertext, SECRET), None)
+            .await
+            .unwrap();
+        assert_eq!(result.status, VerifyStatus::Tampered);
+        assert!(result.payments.is_empty());
+    }
+
+    #[tokio::test]
+    async fn bare_usdt_address_is_unknown() {
+        let client = ScriptedClient::capture();
+        let svc = service(client);
+        let result = svc.verify(USDT_POLYGON, None).await.unwrap();
+        assert_eq!(result.status, VerifyStatus::Unknown);
+    }
+
+    #[tokio::test]
+    async fn pol_without_branta_params_is_unknown() {
+        let svc = service(ScriptedClient::capture());
+        let result = svc
+            .verify(&format!("pol:{USDT_POLYGON}?value=50"), None)
+            .await
+            .unwrap();
+        assert_eq!(result.status, VerifyStatus::Unknown);
+    }
+
+    #[tokio::test]
+    async fn pol_ignores_sibling_bitcoin_rail() {
+        let usdt = encrypted_polygon(
+            USDT_POLYGON,
+            DestinationType::UsdtPolygon,
+            SECRET,
+            "zk-usdt",
+        );
+        let btc = encrypted_bitcoin(ADDRESS, SECRET, "zk-btc");
+        let ciphertext = usdt.value.clone();
+        let svc = service(ScriptedClient::payments(vec![Payment {
+            destinations: vec![btc, usdt],
+            ..Payment::default()
+        }]));
+        let result = svc
+            .verify(&pol_uri(USDT_POLYGON, &ciphertext, SECRET), None)
+            .await
+            .unwrap();
+        assert_eq!(result.status, VerifyStatus::Match);
+        let dests = &result.payments[0].destinations;
+        assert_eq!(dests[0].r#type, Some(DestinationType::BitcoinAddress));
+        assert!(dests[0].is_encrypted);
+        assert!(!dests[1].is_encrypted);
+        assert_eq!(dests[1].value, USDT_POLYGON);
+    }
+
+    #[tokio::test]
+    async fn bitcoin_ignores_sibling_usdt_rail() {
+        let usdt = encrypted_polygon(
+            USDT_POLYGON,
+            DestinationType::UsdtPolygon,
+            SECRET,
+            "zk-usdt",
+        );
+        let btc = encrypted_bitcoin(ADDRESS, SECRET, "zk-btc");
+        let ciphertext = btc.value.clone();
+        let svc = service(ScriptedClient::payments(vec![Payment {
+            destinations: vec![btc, usdt],
+            ..Payment::default()
+        }]));
+        let result = svc
+            .verify(&bitcoin_qr(ADDRESS, &ciphertext, SECRET), None)
+            .await
+            .unwrap();
+        assert_eq!(result.status, VerifyStatus::Match);
+        let dests = &result.payments[0].destinations;
+        assert!(!dests[0].is_encrypted);
+        assert_eq!(dests[0].value, ADDRESS);
+        assert!(dests[1].is_encrypted);
+        assert_eq!(dests[1].r#type, Some(DestinationType::UsdtPolygon));
+    }
+
+    #[tokio::test]
+    async fn pol_match_if_any_dual_usdt_leaves_sibling_encrypted() {
+        let matched = encrypted_polygon(
+            USDT_POLYGON,
+            DestinationType::UsdtPolygon,
+            SECRET,
+            "zk-usdt",
+        );
+        let sibling =
+            encrypted_polygon(SIBLING_USDT, DestinationType::UsdtPolygon, SECRET, "zk-sib");
+        let ciphertext = matched.value.clone();
+        let sibling_cipher = sibling.value.clone();
+        let svc = service(ScriptedClient::payments(vec![Payment {
+            destinations: vec![sibling, matched],
+            ..Payment::default()
+        }]));
+        let result = svc
+            .verify(&pol_uri(USDT_POLYGON, &ciphertext, SECRET), None)
+            .await
+            .unwrap();
+        assert_eq!(result.status, VerifyStatus::Match);
+        let dests = &result.payments[0].destinations;
+        assert!(dests[0].is_encrypted);
+        assert_eq!(dests[0].value, sibling_cipher);
+        assert!(!dests[1].is_encrypted);
+        assert_eq!(dests[1].value, USDT_POLYGON);
+    }
+
+    #[tokio::test]
+    async fn pol_usdc_match() {
+        let dest = encrypted_polygon(
+            USDC_POLYGON,
+            DestinationType::UsdcPolygon,
+            SECRET,
+            "zk-usdc",
+        );
+        let ciphertext = dest.value.clone();
+        let svc = service(ScriptedClient::payments(vec![Payment {
+            destinations: vec![dest],
+            ..Payment::default()
+        }]));
+        let result = svc
+            .verify(&pol_uri(USDC_POLYGON, &ciphertext, SECRET), None)
+            .await
+            .unwrap();
+        assert_eq!(result.status, VerifyStatus::Match);
+        assert_eq!(
+            result.matched_destinations[0].r#type,
+            Some(DestinationType::UsdcPolygon)
+        );
+    }
+
+    #[tokio::test]
+    async fn pol_binds_usdt_leaves_usdc_encrypted() {
+        let usdt = encrypted_polygon(
+            USDT_POLYGON,
+            DestinationType::UsdtPolygon,
+            SECRET,
+            "zk-usdt",
+        );
+        let usdc = encrypted_polygon(
+            USDC_POLYGON,
+            DestinationType::UsdcPolygon,
+            SECRET,
+            "zk-usdc",
+        );
+        let ciphertext = usdt.value.clone();
+        let svc = service(ScriptedClient::payments(vec![Payment {
+            destinations: vec![usdt, usdc],
+            ..Payment::default()
+        }]));
+        let result = svc
+            .verify(&pol_uri(USDT_POLYGON, &ciphertext, SECRET), None)
+            .await
+            .unwrap();
+        assert_eq!(result.status, VerifyStatus::Match);
+        let dests = &result.payments[0].destinations;
+        assert!(!dests[0].is_encrypted && dests[0].r#type == Some(DestinationType::UsdtPolygon));
+        assert!(dests[1].is_encrypted && dests[1].r#type == Some(DestinationType::UsdcPolygon));
+    }
+
+    #[tokio::test]
+    async fn same_address_usdt_and_usdc_both_match() {
+        let usdt = encrypted_polygon(
+            USDT_POLYGON,
+            DestinationType::UsdtPolygon,
+            SECRET,
+            "zk-usdt",
+        );
+        let usdc = encrypted_polygon(
+            USDT_POLYGON,
+            DestinationType::UsdcPolygon,
+            SECRET,
+            "zk-usdc",
+        );
+        let ciphertext = usdt.value.clone();
+        let svc = service(ScriptedClient::payments(vec![Payment {
+            destinations: vec![usdt, usdc],
+            ..Payment::default()
+        }]));
+        let result = svc
+            .verify(&pol_uri(USDT_POLYGON, &ciphertext, SECRET), None)
+            .await
+            .unwrap();
+        assert_eq!(result.status, VerifyStatus::Match);
+        assert_eq!(result.matched_destinations.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn pol_wrong_secret_is_unknown() {
+        let dest = encrypted_polygon(
+            USDT_POLYGON,
+            DestinationType::UsdtPolygon,
+            SECRET,
+            "zk-poly",
+        );
+        let ciphertext = dest.value.clone();
+        let svc = service(ScriptedClient::payments(vec![Payment {
+            destinations: vec![dest],
+            ..Payment::default()
+        }]));
+        let result = svc
+            .verify(&pol_uri(USDT_POLYGON, &ciphertext, "wrong-secret"), None)
+            .await
+            .unwrap();
+        assert_eq!(result.status, VerifyStatus::Unknown);
+    }
+
+    #[tokio::test]
+    async fn pol_description_is_lifted_from_decrypted_metadata() {
+        let dek = "dek-poly";
+        let metadata = r#"{"description":"USDT invoice"}"#;
+        let encrypted_metadata = encrypt(metadata, dek, true).unwrap();
+        let encrypted_dek = encrypt(dek, SECRET, true).unwrap();
+        let mut dest = encrypted_polygon(
+            USDT_POLYGON,
+            DestinationType::UsdtPolygon,
+            SECRET,
+            "zk-usdt",
+        );
+        dest.encrypted_dek = Some(encrypted_dek);
+        let ciphertext = dest.value.clone();
+        let svc = service(ScriptedClient::payments(vec![Payment {
+            metadata: Some(encrypted_metadata),
+            destinations: vec![dest],
+            ..Payment::default()
+        }]));
+        let result = svc
+            .verify(&pol_uri(USDT_POLYGON, &ciphertext, SECRET), None)
+            .await
+            .unwrap();
+        assert_eq!(result.status, VerifyStatus::Match);
+        assert_eq!(
+            result.payments[0].description.as_deref(),
+            Some("USDT invoice")
+        );
+        assert_eq!(
+            result.matched_destinations[0].r#type,
+            Some(DestinationType::UsdtPolygon)
+        );
+    }
+
+    #[tokio::test]
+    async fn add_payment_encrypts_usdt_and_usdc_polygon() {
+        let client = ScriptedClient::capture();
+        let svc = service_with_secret(client, Box::new(PolygonSecret));
+        let caller = crate::PaymentBuilder::new()
+            .add_destination(USDT_POLYGON, Some(DestinationType::UsdtPolygon))
+            .build();
+        let result = svc.add_payment(&caller, None).await.unwrap();
+        assert_eq!(caller.destinations[0].value, USDT_POLYGON);
+        assert_ne!(result.payment.destinations[0].value, USDT_POLYGON);
+        assert_eq!(
+            result.payment.destinations[0].r#type,
+            Some(DestinationType::UsdtPolygon)
+        );
+        assert_eq!(result.secret, "polygon-secret");
+
+        let usdc_client = ScriptedClient::capture();
+        let usdc_svc = service_with_secret(usdc_client, Box::new(PolygonSecret));
+        let usdc = crate::PaymentBuilder::new()
+            .add_destination(USDC_POLYGON, Some(DestinationType::UsdcPolygon))
+            .build();
+        let usdc_result = usdc_svc.add_payment(&usdc, None).await.unwrap();
+        assert_eq!(
+            usdc_result.payment.destinations[0].r#type,
+            Some(DestinationType::UsdcPolygon)
+        );
+        assert_ne!(usdc_result.payment.destinations[0].value, USDC_POLYGON);
+    }
+
+    #[tokio::test]
+    async fn add_payment_bare_ox_without_type_is_unsupported() {
+        let svc = service(ScriptedClient::capture());
+        let payment = crate::PaymentBuilder::new()
+            .add_destination(USDT_POLYGON, None)
+            .build();
+        let err = svc.add_payment(&payment, None).await.unwrap_err();
+        assert!(matches!(err, BrantaError::UnsupportedDestinationType(_)));
     }
 
     struct CaptureClient;
@@ -794,5 +1282,11 @@ mod tests {
         ) -> Result<bool, BrantaError> {
             Ok(true)
         }
+    }
+
+    // Silence unused LOOKUP in unit tests that mirror Python fixtures.
+    #[allow(dead_code)]
+    fn _lookup() -> &'static str {
+        LOOKUP
     }
 }
