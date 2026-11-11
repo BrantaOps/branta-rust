@@ -34,8 +34,8 @@ fn addresses_match(a: &str, b: &str) -> bool {
         let lower = value.to_ascii_lowercase();
         lower.starts_with("bc1") || lower.starts_with("tb1") || lower.starts_with("bcrt1")
     }
-    let case_insensitive =
-        (is_bech32(a) && is_bech32(b)) || (a.starts_with("0x") && b.starts_with("0x"));
+    let both_evm = a.to_ascii_lowercase().starts_with("0x") && b.to_ascii_lowercase().starts_with("0x");
+    let case_insensitive = (is_bech32(a) && is_bech32(b)) || both_evm;
     if case_insensitive {
         a.eq_ignore_ascii_case(b)
     } else {
@@ -951,6 +951,27 @@ mod tests {
                 &pol_uri(&USDT_POLYGON.to_ascii_lowercase(), &ciphertext, SECRET),
                 None,
             )
+            .await
+            .unwrap();
+        assert_eq!(result.status, VerifyStatus::Match);
+    }
+
+    #[tokio::test]
+    async fn pol_usdt_0x_prefix_case_insensitive_match() {
+        let dest = encrypted_polygon(
+            USDT_POLYGON,
+            DestinationType::UsdtPolygon,
+            SECRET,
+            "zk-poly",
+        );
+        let ciphertext = dest.value.clone();
+        let svc = service(ScriptedClient::payments(vec![Payment {
+            destinations: vec![dest],
+            ..Payment::default()
+        }]));
+        let mixed = format!("0X{}", &USDT_POLYGON[2..]);
+        let result = svc
+            .verify(&pol_uri(&mixed, &ciphertext, SECRET), None)
             .await
             .unwrap();
         assert_eq!(result.status, VerifyStatus::Match);
