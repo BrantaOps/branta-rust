@@ -246,12 +246,33 @@ async fn staging_usdc_polygon_round_trip() {
         match_result.matched_destinations[0].r#type,
         Some(DestinationType::UsdcPolygon)
     );
+    assert!(match_result.payments[0].destinations[0]
+        .value
+        .eq_ignore_ascii_case(address));
+
+    let lower = svc
+        .verify(
+            &pol_uri(&address.to_ascii_lowercase(), encrypted, &added.secret),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(lower.status, VerifyStatus::Match);
 
     let tampered = svc
         .verify(&pol_uri(swapped, encrypted, &added.secret), None)
         .await
         .unwrap();
     assert_eq!(tampered.status, VerifyStatus::Tampered);
+
+    let bare = svc.verify(address, None).await.unwrap();
+    assert_eq!(bare.status, VerifyStatus::Unknown);
+
+    let pol_bare = svc
+        .verify(&format!("pol:{address}?value=50&currency=USD"), None)
+        .await
+        .unwrap();
+    assert_eq!(pol_bare.status, VerifyStatus::Unknown);
 }
 
 #[tokio::test]

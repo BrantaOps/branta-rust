@@ -622,7 +622,6 @@ mod tests {
 
     const ADDRESS: &str = "bc1qmerchant";
     const SECRET: &str = "branta-secret";
-    const LOOKUP: &str = "lookup-token";
     const USDT_POLYGON: &str = "0x278297528c32eCa01295B0d2135984d3442ec963";
     const USDC_POLYGON: &str = "0xAb5801a7D398351b8bE11C439e05C5B3259aeC9B";
     const SIBLING_USDT: &str = "0x2222222222222222222222222222222222222222";
@@ -1282,11 +1281,5 @@ mod tests {
         ) -> Result<bool, BrantaError> {
             Ok(true)
         }
-    }
-
-    // Silence unused LOOKUP in unit tests that mirror Python fixtures.
-    #[allow(dead_code)]
-    fn _lookup() -> &'static str {
-        LOOKUP
     }
 }
