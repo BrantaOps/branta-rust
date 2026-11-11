@@ -572,7 +572,6 @@ fn destination_type_name(r#type: Option<DestinationType>) -> String {
         Some(DestinationType::UsdcBsc) => "usdc_bsc",
         Some(DestinationType::UsdtTron) => "usdt_tron",
         Some(DestinationType::UsdtTon) => "usdt_ton",
-        Some(DestinationType::UsdcTon) => "usdc_ton",
         Some(DestinationType::UsdtSolana) => "usdt_solana",
         Some(DestinationType::UsdcSolana) => "usdc_solana",
         None => "unknown",

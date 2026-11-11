@@ -318,7 +318,7 @@ mod tests {
             (
                 "ton",
                 "UQBexample",
-                vec![DestinationType::UsdtTon, DestinationType::UsdcTon],
+                vec![DestinationType::UsdtTon],
             ),
             (
                 "sol",

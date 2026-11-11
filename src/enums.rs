@@ -42,7 +42,6 @@ pub enum DestinationType {
     UsdcBsc,
     UsdtTron,
     UsdtTon,
-    UsdcTon,
     UsdtSolana,
     UsdcSolana,
 }
@@ -64,8 +63,7 @@ pub const BSC_EVM_DESTINATION_TYPES: &[DestinationType] =
 pub const TRON_DESTINATION_TYPES: &[DestinationType] = &[DestinationType::UsdtTron];
 
 /// TON secret-key rails (`ton:` URI).
-pub const TON_DESTINATION_TYPES: &[DestinationType] =
-    &[DestinationType::UsdtTon, DestinationType::UsdcTon];
+pub const TON_DESTINATION_TYPES: &[DestinationType] = &[DestinationType::UsdtTon];
 
 /// Solana secret-key rails (`sol:` URI).
 pub const SOLANA_DESTINATION_TYPES: &[DestinationType] =
@@ -155,7 +153,6 @@ mod tests {
             (DestinationType::UsdcBsc, "\"usdc_bsc\""),
             (DestinationType::UsdtTron, "\"usdt_tron\""),
             (DestinationType::UsdtTon, "\"usdt_ton\""),
-            (DestinationType::UsdcTon, "\"usdc_ton\""),
             (DestinationType::UsdtSolana, "\"usdt_solana\""),
             (DestinationType::UsdcSolana, "\"usdc_solana\""),
         ];
