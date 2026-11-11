@@ -1,11 +1,24 @@
 //! Live lookups against the same example QR codes as the Go SDK.
 //!
 //! Skipped unless `BRANTA_RUN_INTEGRATION=1`.
+//! Write tests (polygon round-trips / combos) also need `BRANTA_API_KEY`.
 
-use branta::{BrantaApiOptions, BrantaEnvironment, BrantaService, VerifyStatus};
+use branta::{
+    BrantaApiOptions, BrantaEnvironment, BrantaService, DestinationType, PaymentBuilder,
+    VerifyStatus,
+};
+use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 
 fn skip_integration() -> bool {
     std::env::var("BRANTA_RUN_INTEGRATION").ok().as_deref() != Some("1")
+}
+
+fn skip_write() -> bool {
+    skip_integration()
+        || std::env::var("BRANTA_API_KEY")
+            .ok()
+            .filter(|v| !v.is_empty())
+            .is_none()
 }
 
 fn service(environment: BrantaEnvironment) -> BrantaService {
@@ -13,6 +26,15 @@ fn service(environment: BrantaEnvironment) -> BrantaService {
     options.api_key = std::env::var("BRANTA_API_KEY").ok();
     let token = std::env::var("BRANTA_INTEGRATION_METRICS_TOKEN").ok();
     BrantaService::new_with_token(options, token)
+}
+
+fn pol_uri(recipient: &str, encrypted: &str, secret: &str) -> String {
+    let query = format!(
+        "value=50&user=send&currency=USD&branta_id={}&branta_secret={}",
+        utf8_percent_encode(encrypted, NON_ALPHANUMERIC),
+        utf8_percent_encode(secret, NON_ALPHANUMERIC),
+    );
+    format!("pol:{recipient}?{query}")
 }
 
 async fn check(environment: BrantaEnvironment, qr: &str, status: VerifyStatus) {
@@ -24,8 +46,10 @@ async fn check(environment: BrantaEnvironment, qr: &str, status: VerifyStatus) {
     assert!(!result.verify_url.is_empty());
     if status == VerifyStatus::Match {
         assert!(!result.payments.is_empty());
+        assert!(!result.matched_destinations.is_empty());
     } else {
         assert!(result.payments.is_empty());
+        assert!(result.matched_destinations.is_empty());
     }
     if status == VerifyStatus::Tampered {
         assert!(!result.verify_url.contains('#'));
@@ -108,8 +132,351 @@ async fn staging_example_qr_codes() {
             "bitcoin:bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4?branta_id=6SpYCe23r79x0t8rNvmjWqhrg8hen4xz%2FYSXhNJ9HLSYrTRPnm%2BSwAuf6NOKobnwE%2B3MQBNkyTnCtIWpKKX2E9ZUWVedig%3D%3D&branta_secret=05eb145d-b5cb-452a-9256-0bdfd9a15ffa",
             VerifyStatus::Tampered,
         ),
+        (
+            "pol:0x278297528c32eCa01295B0d2135984d3442ec963?value=50&user=send&currency=USD&branta_id=4WYE9J4TjNitdX7AL%2Fw7frpYdKGwSKHCS5zpFXl%2FlQGwpsQi4%2Fgv5MxgujPFzYMbIKqg2rtyYGpzJCllEA6Qudbi7lLkiA%3D%3D&branta_secret=c0fab1ee-1526-4efa-b991-9ee138a44cd2",
+            VerifyStatus::Match,
+        ),
+        (
+            "pol:0xAb5801a7D398351b8bE11C439e05C5B3259aeC9B?value=50&user=send&currency=USD&branta_id=8rnGGWZcg%2Fg3He1OK6yZ6OLOEyusldwIDaoPImRzWjoUGguyXKotuF8ZlGbCZN9TRqx3PdXjvHDdwffdVvIZxmZ00xJvxA%3D%3D&branta_secret=0515039f-2c31-4467-b62a-4e919079a44e",
+            VerifyStatus::Match,
+        ),
+        (
+            "0x278297528c32eCa01295B0d2135984d3442ec963",
+            VerifyStatus::Unknown,
+        ),
     ];
     for (qr, status) in cases {
         check(BrantaEnvironment::Staging, qr, status).await;
     }
+}
+
+#[tokio::test]
+async fn staging_usdt_polygon_round_trip() {
+    if skip_write() {
+        return;
+    }
+    let address = "0x278297528c32eCa01295B0d2135984d3442ec963";
+    let swapped = "0x1111111111111111111111111111111111111111";
+    let svc = service(BrantaEnvironment::Staging);
+    let added = svc
+        .add_payment(
+            &PaymentBuilder::new()
+                .add_destination(address, Some(DestinationType::UsdtPolygon))
+                .set_ttl(120)
+                .build(),
+            None,
+        )
+        .await
+        .unwrap();
+    let encrypted = &added.payment.destinations[0].value;
+    assert_eq!(
+        added.payment.destinations[0].r#type,
+        Some(DestinationType::UsdtPolygon)
+    );
+
+    let match_result = svc
+        .verify(&pol_uri(address, encrypted, &added.secret), None)
+        .await
+        .unwrap();
+    assert_eq!(match_result.status, VerifyStatus::Match);
+    assert_eq!(
+        match_result.payments[0].destinations[0].r#type,
+        Some(DestinationType::UsdtPolygon)
+    );
+    assert!(match_result.payments[0].destinations[0]
+        .value
+        .eq_ignore_ascii_case(address));
+    assert_eq!(match_result.matched_destinations.len(), 1);
+    assert_eq!(
+        match_result.matched_destinations[0].r#type,
+        Some(DestinationType::UsdtPolygon)
+    );
+
+    let lower = svc
+        .verify(
+            &pol_uri(&address.to_ascii_lowercase(), encrypted, &added.secret),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(lower.status, VerifyStatus::Match);
+
+    let tampered = svc
+        .verify(&pol_uri(swapped, encrypted, &added.secret), None)
+        .await
+        .unwrap();
+    assert_eq!(tampered.status, VerifyStatus::Tampered);
+
+    let bare = svc.verify(address, None).await.unwrap();
+    assert_eq!(bare.status, VerifyStatus::Unknown);
+
+    let pol_bare = svc
+        .verify(&format!("pol:{address}?value=50&currency=USD"), None)
+        .await
+        .unwrap();
+    assert_eq!(pol_bare.status, VerifyStatus::Unknown);
+}
+
+#[tokio::test]
+async fn staging_usdc_polygon_round_trip() {
+    if skip_write() {
+        return;
+    }
+    let address = "0xAb5801a7D398351b8bE11C439e05C5B3259aeC9B";
+    let swapped = "0x1111111111111111111111111111111111111111";
+    let svc = service(BrantaEnvironment::Staging);
+    let added = svc
+        .add_payment(
+            &PaymentBuilder::new()
+                .add_destination(address, Some(DestinationType::UsdcPolygon))
+                .set_ttl(120)
+                .build(),
+            None,
+        )
+        .await
+        .unwrap();
+    let encrypted = &added.payment.destinations[0].value;
+
+    let match_result = svc
+        .verify(&pol_uri(address, encrypted, &added.secret), None)
+        .await
+        .unwrap();
+    assert_eq!(match_result.status, VerifyStatus::Match);
+    assert_eq!(
+        match_result.matched_destinations[0].r#type,
+        Some(DestinationType::UsdcPolygon)
+    );
+    assert!(match_result.payments[0].destinations[0]
+        .value
+        .eq_ignore_ascii_case(address));
+
+    let lower = svc
+        .verify(
+            &pol_uri(&address.to_ascii_lowercase(), encrypted, &added.secret),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(lower.status, VerifyStatus::Match);
+
+    let tampered = svc
+        .verify(&pol_uri(swapped, encrypted, &added.secret), None)
+        .await
+        .unwrap();
+    assert_eq!(tampered.status, VerifyStatus::Tampered);
+
+    let bare = svc.verify(address, None).await.unwrap();
+    assert_eq!(bare.status, VerifyStatus::Unknown);
+
+    let pol_bare = svc
+        .verify(&format!("pol:{address}?value=50&currency=USD"), None)
+        .await
+        .unwrap();
+    assert_eq!(pol_bare.status, VerifyStatus::Unknown);
+}
+
+#[tokio::test]
+async fn staging_live_combos() {
+    if skip_write() {
+        return;
+    }
+    let svc = service(BrantaEnvironment::Staging);
+    let btc = "bc1qgw3dzmhnyvcswc9r0v0z0ajtp8ulm4nuyeahwr";
+    let usdt = "0x278297528c32eCa01295B0d2135984d3442ec963";
+    let usdc = "0xAb5801a7D398351b8bE11C439e05C5B3259aeC9B";
+    let swap = "0x1111111111111111111111111111111111111111";
+    let btc_sw = "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4";
+
+    let added = svc
+        .add_payment(
+            &PaymentBuilder::new()
+                .add_destination(btc, Some(DestinationType::BitcoinAddress))
+                .set_ttl(120)
+                .build(),
+            None,
+        )
+        .await
+        .unwrap();
+    let enc = &added.payment.destinations[0].value;
+    let qr = format!(
+        "bitcoin:{btc}?branta_id={}&branta_secret={}",
+        utf8_percent_encode(enc, NON_ALPHANUMERIC),
+        utf8_percent_encode(&added.secret, NON_ALPHANUMERIC),
+    );
+    let match_result = svc.verify(&qr, None).await.unwrap();
+    assert_eq!(match_result.status, VerifyStatus::Match);
+    assert_eq!(match_result.matched_destinations.len(), 1);
+    assert_eq!(
+        match_result.matched_destinations[0].r#type,
+        Some(DestinationType::BitcoinAddress)
+    );
+    let swapped_qr = format!(
+        "bitcoin:{btc_sw}?branta_id={}&branta_secret={}",
+        utf8_percent_encode(enc, NON_ALPHANUMERIC),
+        utf8_percent_encode(&added.secret, NON_ALPHANUMERIC),
+    );
+    assert_eq!(
+        svc.verify(&swapped_qr, None).await.unwrap().status,
+        VerifyStatus::Tampered
+    );
+    assert_eq!(
+        svc.verify(&format!("bitcoin:{btc}"), None)
+            .await
+            .unwrap()
+            .status,
+        VerifyStatus::Unknown
+    );
+
+    let added = svc
+        .add_payment(
+            &PaymentBuilder::new()
+                .add_destination(usdt, Some(DestinationType::UsdtPolygon))
+                .add_destination(usdc, Some(DestinationType::UsdcPolygon))
+                .set_ttl(120)
+                .build(),
+            None,
+        )
+        .await
+        .unwrap();
+    let mut enc_usdt = String::new();
+    let mut enc_usdc = String::new();
+    for destination in &added.payment.destinations {
+        match destination.r#type {
+            Some(DestinationType::UsdtPolygon) => enc_usdt = destination.value.clone(),
+            Some(DestinationType::UsdcPolygon) => enc_usdc = destination.value.clone(),
+            _ => {}
+        }
+    }
+    let usdt_match = svc
+        .verify(&pol_uri(usdt, &enc_usdt, &added.secret), None)
+        .await
+        .unwrap();
+    assert_eq!(usdt_match.status, VerifyStatus::Match);
+    assert_eq!(usdt_match.matched_destinations.len(), 1);
+    assert_eq!(
+        usdt_match.matched_destinations[0].r#type,
+        Some(DestinationType::UsdtPolygon)
+    );
+    let usdc_match = svc
+        .verify(&pol_uri(usdc, &enc_usdc, &added.secret), None)
+        .await
+        .unwrap();
+    assert_eq!(usdc_match.status, VerifyStatus::Match);
+    assert_eq!(usdc_match.matched_destinations.len(), 1);
+    assert_eq!(
+        usdc_match.matched_destinations[0].r#type,
+        Some(DestinationType::UsdcPolygon)
+    );
+
+    let added = svc
+        .add_payment(
+            &PaymentBuilder::new()
+                .add_destination(usdt, Some(DestinationType::UsdtPolygon))
+                .add_destination(usdt, Some(DestinationType::UsdcPolygon))
+                .set_ttl(120)
+                .build(),
+            None,
+        )
+        .await
+        .unwrap();
+    let enc = &added.payment.destinations[0].value;
+    let both = svc
+        .verify(&pol_uri(usdt, enc, &added.secret), None)
+        .await
+        .unwrap();
+    assert_eq!(both.status, VerifyStatus::Match);
+    assert_eq!(both.matched_destinations.len(), 2);
+
+    let added = svc
+        .add_payment(
+            &PaymentBuilder::new()
+                .add_destination(btc, Some(DestinationType::BitcoinAddress))
+                .add_destination(usdt, Some(DestinationType::UsdtPolygon))
+                .set_ttl(120)
+                .build(),
+            None,
+        )
+        .await
+        .unwrap();
+    let mut enc_btc = String::new();
+    let mut enc_usdt = String::new();
+    for destination in &added.payment.destinations {
+        match destination.r#type {
+            Some(DestinationType::BitcoinAddress) => enc_btc = destination.value.clone(),
+            Some(DestinationType::UsdtPolygon) => enc_usdt = destination.value.clone(),
+            _ => {}
+        }
+    }
+    let btc_qr = format!(
+        "bitcoin:{btc}?branta_id={}&branta_secret={}",
+        utf8_percent_encode(&enc_btc, NON_ALPHANUMERIC),
+        utf8_percent_encode(&added.secret, NON_ALPHANUMERIC),
+    );
+    let btc_match = svc.verify(&btc_qr, None).await.unwrap();
+    assert_eq!(btc_match.status, VerifyStatus::Match);
+    assert_eq!(btc_match.matched_destinations.len(), 1);
+    assert_eq!(
+        btc_match.matched_destinations[0].r#type,
+        Some(DestinationType::BitcoinAddress)
+    );
+    let pol_match = svc
+        .verify(&pol_uri(usdt, &enc_usdt, &added.secret), None)
+        .await
+        .unwrap();
+    assert_eq!(pol_match.status, VerifyStatus::Match);
+    assert_eq!(pol_match.matched_destinations.len(), 1);
+    assert_eq!(
+        pol_match.matched_destinations[0].r#type,
+        Some(DestinationType::UsdtPolygon)
+    );
+    assert_eq!(
+        svc.verify(&pol_uri(swap, &enc_usdt, &added.secret), None)
+            .await
+            .unwrap()
+            .status,
+        VerifyStatus::Tampered
+    );
+
+    let added = svc
+        .add_payment(
+            &PaymentBuilder::new()
+                .add_destination(usdt, Some(DestinationType::UsdtPolygon))
+                .set_ttl(120)
+                .build(),
+            None,
+        )
+        .await
+        .unwrap();
+    let enc = &added.payment.destinations[0].value;
+    assert_eq!(
+        svc.verify(
+            &pol_uri(&usdt.to_ascii_lowercase(), enc, &added.secret),
+            None
+        )
+        .await
+        .unwrap()
+        .status,
+        VerifyStatus::Match
+    );
+    assert_eq!(
+        svc.verify(
+            &pol_uri(usdt, enc, "00000000-0000-0000-0000-000000000000"),
+            None
+        )
+        .await
+        .unwrap()
+        .status,
+        VerifyStatus::Unknown
+    );
+    assert_eq!(
+        svc.verify(usdt, None).await.unwrap().status,
+        VerifyStatus::Unknown
+    );
+    assert_eq!(
+        svc.verify(&format!("pol:{usdt}?value=50&currency=USD"), None)
+            .await
+            .unwrap()
+            .status,
+        VerifyStatus::Unknown
+    );
 }

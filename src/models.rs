@@ -158,6 +158,8 @@ pub struct VerifyResult {
     pub status: VerifyStatus,
     pub payments: Vec<Payment>,
     pub verify_url: String,
+    /// Decrypted rails that bound the scan on `Match` (token for `pol:` is on `type`).
+    pub matched_destinations: Vec<Destination>,
 }
 
 /// The result of [`crate::BrantaService::add_payment`].

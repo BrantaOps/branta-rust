@@ -34,6 +34,26 @@ pub enum DestinationType {
     Bolt11,
     ArkAddress,
     SilentPayment,
+    UsdtPolygon,
+    UsdcPolygon,
+}
+
+/// Polygon EVM secret-key rails. A `pol:` URI maps to this family for verify
+/// (match-if-any). Token is still the destination type on the payment.
+pub const POLYGON_EVM_DESTINATION_TYPES: &[DestinationType] =
+    &[DestinationType::UsdtPolygon, DestinationType::UsdcPolygon];
+
+/// Reports whether `r#type` is a Polygon EVM rail.
+pub fn is_polygon_evm_destination_type(r#type: DestinationType) -> bool {
+    matches!(
+        r#type,
+        DestinationType::UsdtPolygon | DestinationType::UsdcPolygon
+    )
+}
+
+/// Address rails encrypted with a random `branta_secret` (not a derived key).
+pub fn is_secret_key_address_type(r#type: DestinationType) -> bool {
+    r#type == DestinationType::BitcoinAddress || is_polygon_evm_destination_type(r#type)
 }
 
 /// The result of [`crate::BrantaService::verify`].
@@ -80,6 +100,8 @@ mod tests {
             (DestinationType::Bolt11, "\"bolt11\""),
             (DestinationType::ArkAddress, "\"ark_address\""),
             (DestinationType::SilentPayment, "\"silent_payment\""),
+            (DestinationType::UsdtPolygon, "\"usdt_polygon\""),
+            (DestinationType::UsdcPolygon, "\"usdc_polygon\""),
         ];
         for (variant, expected) in cases {
             let json = serde_json::to_string(&variant).unwrap();
@@ -87,5 +109,25 @@ mod tests {
             let round_tripped: DestinationType = serde_json::from_str(expected).unwrap();
             assert_eq!(round_tripped, variant);
         }
+    }
+
+    #[test]
+    fn polygon_evm_helpers() {
+        assert_eq!(
+            POLYGON_EVM_DESTINATION_TYPES,
+            &[DestinationType::UsdtPolygon, DestinationType::UsdcPolygon]
+        );
+        assert!(is_polygon_evm_destination_type(
+            DestinationType::UsdtPolygon
+        ));
+        assert!(is_polygon_evm_destination_type(
+            DestinationType::UsdcPolygon
+        ));
+        assert!(!is_polygon_evm_destination_type(
+            DestinationType::BitcoinAddress
+        ));
+        assert!(is_secret_key_address_type(DestinationType::BitcoinAddress));
+        assert!(is_secret_key_address_type(DestinationType::UsdtPolygon));
+        assert!(!is_secret_key_address_type(DestinationType::Bolt11));
     }
 }
