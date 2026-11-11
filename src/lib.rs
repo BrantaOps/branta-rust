@@ -11,8 +11,10 @@ mod options;
 mod v2;
 
 pub use enums::{
-    is_polygon_evm_destination_type, is_secret_key_address_type, BrantaEnvironment,
-    DestinationType, VerifyStatus, POLYGON_EVM_DESTINATION_TYPES,
+    is_polygon_evm_destination_type, is_secret_key_address_type, secret_key_uri_family,
+    BrantaEnvironment, DestinationType, VerifyStatus, BSC_EVM_DESTINATION_TYPES,
+    ETHEREUM_EVM_DESTINATION_TYPES, POLYGON_EVM_DESTINATION_TYPES, SECRET_KEY_URI_FAMILIES,
+    SOLANA_DESTINATION_TYPES, TON_DESTINATION_TYPES, TRON_DESTINATION_TYPES,
 };
 pub use error::BrantaError;
 pub use models::{AddPaymentResult, Destination, Payment, Platform, VerifyResult};
