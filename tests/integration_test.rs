@@ -186,6 +186,11 @@ async fn staging_usdt_polygon_round_trip() {
     assert!(match_result.payments[0].destinations[0]
         .value
         .eq_ignore_ascii_case(address));
+    assert_eq!(match_result.matched_destinations.len(), 1);
+    assert_eq!(
+        match_result.matched_destinations[0].r#type,
+        Some(DestinationType::UsdtPolygon)
+    );
 
     let lower = svc
         .verify(
