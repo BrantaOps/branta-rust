@@ -34,7 +34,8 @@ fn addresses_match(a: &str, b: &str) -> bool {
         let lower = value.to_ascii_lowercase();
         lower.starts_with("bc1") || lower.starts_with("tb1") || lower.starts_with("bcrt1")
     }
-    let both_evm = a.to_ascii_lowercase().starts_with("0x") && b.to_ascii_lowercase().starts_with("0x");
+    let both_evm =
+        a.to_ascii_lowercase().starts_with("0x") && b.to_ascii_lowercase().starts_with("0x");
     let case_insensitive = (is_bech32(a) && is_bech32(b)) || both_evm;
     if case_insensitive {
         a.eq_ignore_ascii_case(b)
