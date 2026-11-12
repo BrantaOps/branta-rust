@@ -51,7 +51,7 @@ pub trait BrantaClientTrait: Send + Sync {
     ) -> Result<bool, BrantaError>;
 }
 
-pub struct BrantaClient {
+pub(crate) struct BrantaClient {
     http: reqwest::Client,
     default_options: BrantaApiOptions,
     /// Sent on payment lookups when set. Live integration tests pass

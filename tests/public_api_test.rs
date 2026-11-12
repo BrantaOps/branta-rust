@@ -8,6 +8,24 @@ use branta::{
 
 #[test]
 fn consumer_types_are_reachable() {
+    // Fourteen DestinationType variants; usdc_ton stays deferred.
+    let all = [
+        DestinationType::BitcoinAddress,
+        DestinationType::Bolt11,
+        DestinationType::ArkAddress,
+        DestinationType::SilentPayment,
+        DestinationType::UsdtPolygon,
+        DestinationType::UsdcPolygon,
+        DestinationType::UsdtEthereum,
+        DestinationType::UsdcEthereum,
+        DestinationType::UsdtBsc,
+        DestinationType::UsdcBsc,
+        DestinationType::UsdtTron,
+        DestinationType::UsdtTon,
+        DestinationType::UsdtSolana,
+        DestinationType::UsdcSolana,
+    ];
+    assert_eq!(all.len(), 14);
     assert_eq!(
         serde_json::to_string(&DestinationType::UsdtEthereum).unwrap(),
         "\"usdt_ethereum\""
@@ -51,4 +69,32 @@ fn consumer_types_are_reachable() {
 
     let err = BrantaError::LogoUrlDomainMismatch("platform_logo_url".into());
     assert!(err.to_string().contains("platform_logo_url"));
+}
+
+#[test]
+fn family_helpers_are_not_reexported_from_lib() {
+    let lib = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/lib.rs"),
+    )
+    .expect("src/lib.rs");
+    let forbidden = [
+        "SECRET_KEY_URI_FAMILIES",
+        "is_secret_key_address_type",
+        "is_polygon_evm_destination_type",
+        "POLYGON_EVM_DESTINATION_TYPES",
+        "ETHEREUM_EVM_DESTINATION_TYPES",
+        "BSC_EVM_DESTINATION_TYPES",
+        "TRON_DESTINATION_TYPES",
+        "TON_DESTINATION_TYPES",
+        "SOLANA_DESTINATION_TYPES",
+        "secret_key_uri_family",
+        "BrantaClient",
+        "QrParser",
+    ];
+    for name in forbidden {
+        assert!(
+            !lib.contains(name),
+            "{name} must stay out of the public crate root (src/lib.rs)"
+        );
+    }
 }

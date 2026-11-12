@@ -25,4 +25,5 @@ jobs:
       - name: Enforce ≥80% line coverage
         run: |
           cargo install cargo-llvm-cov --locked --version 0.6.16
-          cargo llvm-cov --fail-under-lines 80 --ignore-filename-regex 'tests/|examples/'
+          # Cover the library only — matches sibling SDK gates (src/, not integration harnesses).
+          cargo llvm-cov --lib --fail-under-lines 80
