@@ -17,7 +17,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Malformed GET JSON / bad payment rows map to `incomplete` (not a thrown decode error). Non-array 200 bodies decode as an empty list.
 - Default HTTP client uses a 30s timeout so hung networks become `incomplete` on verify.
 - `hmac_secret` on `BrantaApiOptions` is deprecated; prefer a shared `api_key` with `PaymentBuilder::set_child_platform`.
-- CI gates line coverage at ≥80%.
 
 ### Notes
 - `usdc_ton` is deferred until a platform names a concrete TON USDC jetton. Matches `@branta-ops/branta` / Python / Dart / Swift / Kotlin / Branta.NET / branta-go 4.3.0.

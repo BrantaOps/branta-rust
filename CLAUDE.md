@@ -16,7 +16,6 @@ If you are implementing this SDK in a consumer project: product rules (send vs r
 ### Build / test / release
 - Build: `cargo build`
 - Test: `cargo test`
-- Coverage gate: `cargo llvm-cov --fail-under-lines 80`
 - Live integration tests: `BRANTA_RUN_INTEGRATION=1 cargo test --test integration_test`
 - Live multi-rail write: `BRANTA_RUN_INTEGRATION=1 BRANTA_API_KEY=… cargo test --test integration_test staging_secret_key_round_trip`
 - Lint: `cargo clippy --all-targets -- -D warnings`
