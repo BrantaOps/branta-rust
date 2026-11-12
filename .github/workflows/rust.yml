@@ -12,7 +12,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
+          components: rustfmt, clippy, llvm-tools-preview
       - uses: Swatinem/rust-cache@v2
       - name: Build
         run: cargo build --all-targets
@@ -22,3 +22,7 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
       - name: Format check
         run: cargo fmt --check
+      - name: Enforce ≥80% line coverage
+        run: |
+          cargo install cargo-llvm-cov --locked --version 0.6.16
+          cargo llvm-cov --fail-under-lines 80 --ignore-filename-regex 'tests/|examples/'

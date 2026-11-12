@@ -315,11 +315,7 @@ mod tests {
                 "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb",
                 vec![DestinationType::UsdtTron],
             ),
-            (
-                "ton",
-                "UQBexample",
-                vec![DestinationType::UsdtTon],
-            ),
+            ("ton", "UQBexample", vec![DestinationType::UsdtTon]),
             (
                 "sol",
                 "7EqQdEULxWcraVx3mXKFjc84LhCkMGZCkRuDofycyinf",

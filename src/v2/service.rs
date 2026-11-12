@@ -2,9 +2,9 @@
 //!
 //! `verify` returns a status. A swapped address or a derived-key plaintext that
 //! is not the scanned value is [`VerifyStatus::Tampered`]. A 404 is
-//! [`VerifyStatus::Unknown`]. Any other non-OK response, and a network failure,
-//! is [`VerifyStatus::Incomplete`]. A logo URL on the wrong origin still returns
-//! [`BrantaError::LogoUrlDomainMismatch`].
+//! [`VerifyStatus::Unknown`]. Any other non-OK response, a network failure /
+//! timeout, or a malformed GET body is [`VerifyStatus::Incomplete`]. A logo URL
+//! on the wrong origin still returns [`BrantaError::LogoUrlDomainMismatch`].
 //!
 //! `add_payment` encrypts a copy. A failed post leaves the caller's [`Payment`] plaintext.
 
@@ -857,6 +857,78 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result.status, VerifyStatus::Tampered);
+    }
+
+    #[tokio::test]
+    async fn combined_branta_qr_decrypts_address_and_invoice() {
+        const INVOICE: &str = "lnbc10u1p4w23tzpp5example";
+        let btc = encrypted_bitcoin(ADDRESS, SECRET, "zk-btc");
+        let bolt_key = to_normalized_hash(&INVOICE.to_lowercase());
+        let bolt = Destination {
+            value: encrypt(&INVOICE.to_lowercase(), &bolt_key, true).unwrap(),
+            is_primary: false,
+            is_encrypted: true,
+            r#type: Some(DestinationType::Bolt11),
+            id: Some("zk-bolt11".into()),
+            encrypted_dek: None,
+        };
+        let ciphertext = btc.value.clone();
+        let svc = service(ScriptedClient::payments(vec![Payment {
+            destinations: vec![btc, bolt],
+            ..Payment::default()
+        }]));
+        let qr = format!(
+            "bitcoin:{ADDRESS}?lightning={INVOICE}&branta_id={ciphertext}&branta_secret={SECRET}"
+        );
+        let result = svc.verify(&qr, None).await.unwrap();
+        assert_eq!(result.status, VerifyStatus::Match);
+        assert_eq!(result.payments[0].destinations[0].value, ADDRESS);
+        assert_eq!(
+            result.payments[0].destinations[1].value.to_lowercase(),
+            INVOICE.to_lowercase()
+        );
+        assert_eq!(result.matched_destinations.len(), 2);
+        assert_eq!(
+            result.matched_destinations[0].r#type,
+            Some(DestinationType::BitcoinAddress)
+        );
+        assert_eq!(
+            result.matched_destinations[1].r#type,
+            Some(DestinationType::Bolt11)
+        );
+    }
+
+    #[tokio::test]
+    async fn combined_branta_qr_swapped_address_is_tampered() {
+        const INVOICE: &str = "lnbc10u1p4w23tzpp5example";
+        let btc = encrypted_bitcoin("bc1qother", SECRET, "zk-btc");
+        let ciphertext = btc.value.clone();
+        let svc = service(ScriptedClient::payments(vec![Payment {
+            destinations: vec![btc],
+            ..Payment::default()
+        }]));
+        let qr = format!(
+            "bitcoin:{ADDRESS}?lightning={INVOICE}&branta_id={ciphertext}&branta_secret={SECRET}"
+        );
+        let result = svc.verify(&qr, None).await.unwrap();
+        assert_eq!(result.status, VerifyStatus::Tampered);
+        assert!(result.payments.is_empty());
+    }
+
+    #[tokio::test]
+    async fn combined_branta_qr_attacker_lightning_is_unknown() {
+        // Payment only has bitcoin — attacker bolt11 cannot bind (same as .NET/Go).
+        let btc = encrypted_bitcoin(ADDRESS, SECRET, "zk-btc");
+        let ciphertext = btc.value.clone();
+        let svc = service(ScriptedClient::payments(vec![Payment {
+            destinations: vec![btc],
+            ..Payment::default()
+        }]));
+        let qr = format!(
+            "bitcoin:{ADDRESS}?lightning=lnbc1attacker&branta_id={ciphertext}&branta_secret={SECRET}"
+        );
+        let result = svc.verify(&qr, None).await.unwrap();
+        assert_eq!(result.status, VerifyStatus::Unknown);
     }
 
     #[tokio::test]
