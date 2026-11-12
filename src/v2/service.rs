@@ -2,9 +2,9 @@
 //!
 //! `verify` returns a status. A swapped address or a derived-key plaintext that
 //! is not the scanned value is [`VerifyStatus::Tampered`]. A 404 is
-//! [`VerifyStatus::Unknown`]. Any other non-OK response, and a network failure,
-//! is [`VerifyStatus::Incomplete`]. A logo URL on the wrong origin still returns
-//! [`BrantaError::LogoUrlDomainMismatch`].
+//! [`VerifyStatus::Unknown`]. Any other non-OK response, a network failure /
+//! timeout, or a malformed GET body is [`VerifyStatus::Incomplete`]. A logo URL
+//! on the wrong origin still returns [`BrantaError::LogoUrlDomainMismatch`].
 //!
 //! `add_payment` encrypts a copy. A failed post leaves the caller's [`Payment`] plaintext.
 
@@ -566,6 +566,14 @@ fn destination_type_name(r#type: Option<DestinationType>) -> String {
         Some(DestinationType::SilentPayment) => "silent_payment",
         Some(DestinationType::UsdtPolygon) => "usdt_polygon",
         Some(DestinationType::UsdcPolygon) => "usdc_polygon",
+        Some(DestinationType::UsdtEthereum) => "usdt_ethereum",
+        Some(DestinationType::UsdcEthereum) => "usdc_ethereum",
+        Some(DestinationType::UsdtBsc) => "usdt_bsc",
+        Some(DestinationType::UsdcBsc) => "usdc_bsc",
+        Some(DestinationType::UsdtTron) => "usdt_tron",
+        Some(DestinationType::UsdtTon) => "usdt_ton",
+        Some(DestinationType::UsdtSolana) => "usdt_solana",
+        Some(DestinationType::UsdcSolana) => "usdc_solana",
         None => "unknown",
     }
     .to_string()
@@ -849,6 +857,78 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result.status, VerifyStatus::Tampered);
+    }
+
+    #[tokio::test]
+    async fn combined_branta_qr_decrypts_address_and_invoice() {
+        const INVOICE: &str = "lnbc10u1p4w23tzpp5example";
+        let btc = encrypted_bitcoin(ADDRESS, SECRET, "zk-btc");
+        let bolt_key = to_normalized_hash(&INVOICE.to_lowercase());
+        let bolt = Destination {
+            value: encrypt(&INVOICE.to_lowercase(), &bolt_key, true).unwrap(),
+            is_primary: false,
+            is_encrypted: true,
+            r#type: Some(DestinationType::Bolt11),
+            id: Some("zk-bolt11".into()),
+            encrypted_dek: None,
+        };
+        let ciphertext = btc.value.clone();
+        let svc = service(ScriptedClient::payments(vec![Payment {
+            destinations: vec![btc, bolt],
+            ..Payment::default()
+        }]));
+        let qr = format!(
+            "bitcoin:{ADDRESS}?lightning={INVOICE}&branta_id={ciphertext}&branta_secret={SECRET}"
+        );
+        let result = svc.verify(&qr, None).await.unwrap();
+        assert_eq!(result.status, VerifyStatus::Match);
+        assert_eq!(result.payments[0].destinations[0].value, ADDRESS);
+        assert_eq!(
+            result.payments[0].destinations[1].value.to_lowercase(),
+            INVOICE.to_lowercase()
+        );
+        assert_eq!(result.matched_destinations.len(), 2);
+        assert_eq!(
+            result.matched_destinations[0].r#type,
+            Some(DestinationType::BitcoinAddress)
+        );
+        assert_eq!(
+            result.matched_destinations[1].r#type,
+            Some(DestinationType::Bolt11)
+        );
+    }
+
+    #[tokio::test]
+    async fn combined_branta_qr_swapped_address_is_tampered() {
+        const INVOICE: &str = "lnbc10u1p4w23tzpp5example";
+        let btc = encrypted_bitcoin("bc1qother", SECRET, "zk-btc");
+        let ciphertext = btc.value.clone();
+        let svc = service(ScriptedClient::payments(vec![Payment {
+            destinations: vec![btc],
+            ..Payment::default()
+        }]));
+        let qr = format!(
+            "bitcoin:{ADDRESS}?lightning={INVOICE}&branta_id={ciphertext}&branta_secret={SECRET}"
+        );
+        let result = svc.verify(&qr, None).await.unwrap();
+        assert_eq!(result.status, VerifyStatus::Tampered);
+        assert!(result.payments.is_empty());
+    }
+
+    #[tokio::test]
+    async fn combined_branta_qr_attacker_lightning_is_unknown() {
+        // Payment only has bitcoin — attacker bolt11 cannot bind (same as .NET/Go).
+        let btc = encrypted_bitcoin(ADDRESS, SECRET, "zk-btc");
+        let ciphertext = btc.value.clone();
+        let svc = service(ScriptedClient::payments(vec![Payment {
+            destinations: vec![btc],
+            ..Payment::default()
+        }]));
+        let qr = format!(
+            "bitcoin:{ADDRESS}?lightning=lnbc1attacker&branta_id={ciphertext}&branta_secret={SECRET}"
+        );
+        let result = svc.verify(&qr, None).await.unwrap();
+        assert_eq!(result.status, VerifyStatus::Unknown);
     }
 
     #[tokio::test]
@@ -1268,6 +1348,127 @@ mod tests {
             .build();
         let err = svc.add_payment(&payment, None).await.unwrap_err();
         assert!(matches!(err, BrantaError::UnsupportedDestinationType(_)));
+    }
+
+    const USDT_ETHEREUM: &str = "0xBF5550253939187432Ef4dccE8089765d3DCb47f";
+    const USDT_TRON: &str = "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb";
+    const USDC_SOLANA: &str = "7EqQdEULxWcraVx3mXKFjc84LhCkMGZCkRuDofycyinf";
+
+    fn chain_uri(scheme: &str, address: &str, encrypted: &str, secret: &str) -> String {
+        format!("{scheme}:{address}?value=50&branta_id={encrypted}&branta_secret={secret}")
+    }
+
+    async fn verify_chain_match(
+        scheme: &str,
+        address: &str,
+        destination_type: DestinationType,
+    ) -> crate::models::VerifyResult {
+        let dest = encrypted_polygon(address, destination_type, SECRET, "zk-chain");
+        let ciphertext = dest.value.clone();
+        let svc = service(ScriptedClient::payments(vec![Payment {
+            destinations: vec![dest],
+            ..Payment::default()
+        }]));
+        let result = svc
+            .verify(&chain_uri(scheme, address, &ciphertext, SECRET), None)
+            .await
+            .unwrap();
+        assert_eq!(result.status, VerifyStatus::Match);
+        assert_eq!(result.matched_destinations.len(), 1);
+        assert_eq!(
+            result.matched_destinations[0].r#type,
+            Some(destination_type)
+        );
+        assert_eq!(result.matched_destinations[0].value, address);
+        result
+    }
+
+    #[tokio::test]
+    async fn eth_usdt_match() {
+        verify_chain_match("eth", USDT_ETHEREUM, DestinationType::UsdtEthereum).await;
+    }
+
+    #[tokio::test]
+    async fn tron_usdt_match() {
+        verify_chain_match("tron", USDT_TRON, DestinationType::UsdtTron).await;
+    }
+
+    #[tokio::test]
+    async fn sol_usdc_match() {
+        verify_chain_match("sol", USDC_SOLANA, DestinationType::UsdcSolana).await;
+    }
+
+    #[tokio::test]
+    async fn tron_swapped_is_tampered() {
+        let dest = encrypted_polygon(USDT_TRON, DestinationType::UsdtTron, SECRET, "zk-tron");
+        let ciphertext = dest.value.clone();
+        let svc = service(ScriptedClient::payments(vec![Payment {
+            destinations: vec![dest],
+            ..Payment::default()
+        }]));
+        let swapped = format!("{}x", &USDT_TRON[..USDT_TRON.len() - 1]);
+        let result = svc
+            .verify(&chain_uri("tron", &swapped, &ciphertext, SECRET), None)
+            .await
+            .unwrap();
+        assert_eq!(result.status, VerifyStatus::Tampered);
+    }
+
+    #[tokio::test]
+    async fn eth_scheme_ignores_polygon_family_rail() {
+        let poly = encrypted_polygon(
+            USDT_POLYGON,
+            DestinationType::UsdtPolygon,
+            SECRET,
+            "zk-poly",
+        );
+        let eth = encrypted_polygon(
+            USDT_ETHEREUM,
+            DestinationType::UsdtEthereum,
+            SECRET,
+            "zk-eth",
+        );
+        let ciphertext = eth.value.clone();
+        let svc = service(ScriptedClient::payments(vec![Payment {
+            destinations: vec![poly, eth],
+            ..Payment::default()
+        }]));
+        let result = svc
+            .verify(&chain_uri("eth", USDT_ETHEREUM, &ciphertext, SECRET), None)
+            .await
+            .unwrap();
+        assert_eq!(result.status, VerifyStatus::Match);
+        let dests = &result.payments[0].destinations;
+        assert!(dests[0].is_encrypted);
+        assert!(!dests[1].is_encrypted);
+        assert_eq!(result.matched_destinations.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn bare_stablecoin_addresses_are_unknown_without_a_lookup() {
+        for address in [USDT_ETHEREUM, USDT_TRON, USDC_SOLANA] {
+            let svc = service(ScriptedClient::incomplete());
+            let result = svc.verify(address, None).await.unwrap();
+            assert_eq!(result.status, VerifyStatus::Unknown, "{address}");
+        }
+    }
+
+    #[tokio::test]
+    async fn add_payment_encrypts_usdt_tron_with_secret() {
+        let svc = service_with_secret(ScriptedClient::capture(), Box::new(PolygonSecret));
+        let caller = crate::PaymentBuilder::new()
+            .add_destination(USDT_TRON, Some(DestinationType::UsdtTron))
+            .build();
+        let result = svc.add_payment(&caller, None).await.unwrap();
+        assert_eq!(caller.destinations[0].value, USDT_TRON);
+        let posted = &result.payment.destinations[0];
+        assert_eq!(posted.r#type, Some(DestinationType::UsdtTron));
+        assert_ne!(posted.value, USDT_TRON);
+        assert_eq!(
+            crate::v2::encryption::decrypt(&posted.value, "polygon-secret").unwrap(),
+            USDT_TRON
+        );
+        assert_eq!(result.secret, "polygon-secret");
     }
 
     struct CaptureClient;

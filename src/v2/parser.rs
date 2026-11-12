@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use percent_encoding::percent_decode_str;
 
-use crate::enums::{DestinationType, POLYGON_EVM_DESTINATION_TYPES};
+use crate::enums::{secret_key_uri_family, DestinationType};
 use crate::extensions::{derived_key_type, is_ark, is_bolt11, is_silent_payment};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -46,14 +46,14 @@ impl QrParser {
         };
 
         let scheme_lower = scheme.to_ascii_lowercase();
-        if scheme_lower == "pol" {
+        if let Some(family) = secret_key_uri_family(&scheme_lower) {
             let dest_value = extract_destination(&text);
             parser.destinations.push(QrDestination {
                 value: dest_value,
                 r#type: None,
                 secret_key: true,
             });
-            parser.expected_secret_key_types = POLYGON_EVM_DESTINATION_TYPES.to_vec();
+            parser.expected_secret_key_types = family.to_vec();
             let query = parse_query(&extract_query(&text));
             parser.on_chain_encryption_text = query.get("branta_id").cloned().unwrap_or_default();
             parser.on_chain_encryption_secret =
@@ -295,6 +295,44 @@ mod tests {
             parser.expected_secret_key_types,
             vec![DestinationType::UsdtPolygon, DestinationType::UsdcPolygon]
         );
+    }
+
+    #[test]
+    fn chain_schemes_map_to_families() {
+        let cases: [(&str, &str, Vec<DestinationType>); 5] = [
+            (
+                "eth",
+                "0xBF5550253939187432Ef4dccE8089765d3DCb47f",
+                vec![DestinationType::UsdtEthereum, DestinationType::UsdcEthereum],
+            ),
+            (
+                "bsc",
+                "0xBF5550253939187432Ef4dccE8089765d3DCb47f",
+                vec![DestinationType::UsdtBsc, DestinationType::UsdcBsc],
+            ),
+            (
+                "tron",
+                "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb",
+                vec![DestinationType::UsdtTron],
+            ),
+            ("ton", "UQBexample", vec![DestinationType::UsdtTon]),
+            (
+                "sol",
+                "7EqQdEULxWcraVx3mXKFjc84LhCkMGZCkRuDofycyinf",
+                vec![DestinationType::UsdtSolana, DestinationType::UsdcSolana],
+            ),
+        ];
+        for (scheme, address, expected) in cases {
+            let parser = QrParser::new(&format!(
+                "{scheme}:{address}?value=1&branta_id=enc&branta_secret=sec"
+            ));
+            assert_eq!(parser.destination(), Some(address), "{scheme}");
+            assert!(parser.destinations[0].r#type.is_none(), "{scheme}");
+            assert!(parser.destinations[0].secret_key, "{scheme}");
+            assert_eq!(parser.on_chain_encryption_text, "enc");
+            assert_eq!(parser.on_chain_encryption_secret, "sec");
+            assert_eq!(parser.expected_secret_key_types, expected, "{scheme}");
+        }
     }
 
     #[test]

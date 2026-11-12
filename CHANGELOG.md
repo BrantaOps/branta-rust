@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.3.0] - 2026-11-12
+
+### Added
+- Multi-rail stablecoin destination types `UsdtEthereum`, `UsdcEthereum`, `UsdtBsc`, `UsdcBsc`, `UsdtTron`, `UsdtTon`, `UsdtSolana`, `UsdcSolana`. `add_payment` encrypts them with a random secret. `verify` parses `eth:`, `bsc:`, `tron:`, `ton:`, and `sol:` URIs with `branta_id` / `branta_secret`, match-if-any within the scheme's family. A bare address is `unknown`. Token is on `matched_destinations[].r#type`, not the URI scheme.
+- Gated `staging_secret_key_round_trip` live coverage for every secret-key rail.
+- `tests/public_api_test.rs` locks the consumer surface.
+
+### Changed
+- **Breaking for 4.2.0 callers:** rail-family lists / `SECRET_KEY_URI_FAMILIES` / `is_secret_key_address_type` / `is_polygon_evm_destination_type` are crate-private (match JS/Python/Dart/Swift/Kotlin/dotnet/Go consumer surface).
+- Malformed GET JSON / bad payment rows map to `incomplete` (not a thrown decode error). Non-array 200 bodies decode as an empty list.
+- Default HTTP client uses a 30s timeout so hung networks become `incomplete` on verify.
+- `hmac_secret` on `BrantaApiOptions` is deprecated; prefer a shared `api_key` with `PaymentBuilder::set_child_platform`.
+
+### Notes
+- `usdc_ton` is deferred until a platform names a concrete TON USDC jetton. Matches `@branta-ops/branta` / Python / Dart / Swift / Kotlin / Branta.NET / branta-go 4.3.0.
+
 ## [4.2.0] - 2026-11-10
 
 ### Added

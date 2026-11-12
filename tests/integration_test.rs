@@ -480,3 +480,198 @@ async fn staging_live_combos() {
         VerifyStatus::Unknown
     );
 }
+
+fn secret_key_uri(scheme: &str, recipient: &str, encrypted: &str, secret: &str) -> String {
+    let query = format!(
+        "branta_id={}&branta_secret={}",
+        utf8_percent_encode(encrypted, NON_ALPHANUMERIC),
+        utf8_percent_encode(secret, NON_ALPHANUMERIC),
+    );
+    format!("{scheme}:{recipient}?{query}")
+}
+
+struct SecretKeyRail {
+    name: &'static str,
+    destination_type: DestinationType,
+    scheme: &'static str,
+    address: &'static str,
+    swapped: &'static str,
+    case_fold: bool,
+}
+
+fn secret_key_rails() -> Vec<SecretKeyRail> {
+    vec![
+        SecretKeyRail {
+            name: "bitcoin",
+            destination_type: DestinationType::BitcoinAddress,
+            scheme: "bitcoin",
+            address: "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh",
+            swapped: "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4",
+            case_fold: false,
+        },
+        SecretKeyRail {
+            name: "usdt_polygon",
+            destination_type: DestinationType::UsdtPolygon,
+            scheme: "pol",
+            address: "0x278297528c32eCa01295B0d2135984d3442ec963",
+            swapped: "0x1111111111111111111111111111111111111111",
+            case_fold: true,
+        },
+        SecretKeyRail {
+            name: "usdc_polygon",
+            destination_type: DestinationType::UsdcPolygon,
+            scheme: "pol",
+            address: "0xAb5801a7D398351b8bE11C439e05C5B3259aeC9B",
+            swapped: "0x2222222222222222222222222222222222222222",
+            case_fold: true,
+        },
+        SecretKeyRail {
+            name: "usdt_ethereum",
+            destination_type: DestinationType::UsdtEthereum,
+            scheme: "eth",
+            address: "0xBF5550253939187432Ef4dccE8089765d3DCb47f",
+            swapped: "0x3333333333333333333333333333333333333333",
+            case_fold: true,
+        },
+        SecretKeyRail {
+            name: "usdc_ethereum",
+            destination_type: DestinationType::UsdcEthereum,
+            scheme: "eth",
+            address: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+            swapped: "0x4444444444444444444444444444444444444444",
+            case_fold: true,
+        },
+        SecretKeyRail {
+            name: "usdt_bsc",
+            destination_type: DestinationType::UsdtBsc,
+            scheme: "bsc",
+            address: "0x55d398326f99059fF775485246999027B3197955",
+            swapped: "0x5555555555555555555555555555555555555555",
+            case_fold: true,
+        },
+        SecretKeyRail {
+            name: "usdc_bsc",
+            destination_type: DestinationType::UsdcBsc,
+            scheme: "bsc",
+            address: "0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d",
+            swapped: "0x6666666666666666666666666666666666666666",
+            case_fold: true,
+        },
+        SecretKeyRail {
+            name: "usdt_tron",
+            destination_type: DestinationType::UsdtTron,
+            scheme: "tron",
+            address: "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb",
+            swapped: "TXyZ1111111111111111111111111111111",
+            case_fold: false,
+        },
+        SecretKeyRail {
+            name: "usdt_ton",
+            destination_type: DestinationType::UsdtTon,
+            scheme: "ton",
+            address: "EQDtFpEwcFAEcRe5mLVh2N6C0y-_tur3BYOM93pEZPw390by",
+            swapped: "EQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAM9c",
+            case_fold: false,
+        },
+        SecretKeyRail {
+            name: "usdt_solana",
+            destination_type: DestinationType::UsdtSolana,
+            scheme: "sol",
+            address: "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
+            swapped: "11111111111111111111111111111111",
+            case_fold: false,
+        },
+        SecretKeyRail {
+            name: "usdc_solana",
+            destination_type: DestinationType::UsdcSolana,
+            scheme: "sol",
+            address: "7EqQdEULxWcraVx3mXKFjc84LhCkMGZCkRuDofycyinf",
+            swapped: "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+            case_fold: false,
+        },
+    ]
+}
+
+/// Live staging add_payment → verify for every secret-key rail.
+#[tokio::test]
+async fn staging_secret_key_round_trip() {
+    if skip_write() {
+        return;
+    }
+    let svc = service(BrantaEnvironment::Staging);
+    for rail in secret_key_rails() {
+        let added = svc
+            .add_payment(
+                &PaymentBuilder::new()
+                    .add_destination(rail.address, Some(rail.destination_type))
+                    .set_ttl(120)
+                    .build(),
+                None,
+            )
+            .await
+            .unwrap_or_else(|err| panic!("{} add_payment: {err}", rail.name));
+        let encrypted = &added.payment.destinations[0].value;
+        assert_eq!(
+            added.payment.destinations[0].r#type,
+            Some(rail.destination_type),
+            "{}",
+            rail.name
+        );
+
+        let match_result = svc
+            .verify(
+                &secret_key_uri(rail.scheme, rail.address, encrypted, &added.secret),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(match_result.status, VerifyStatus::Match, "{}", rail.name);
+        assert_eq!(match_result.matched_destinations.len(), 1, "{}", rail.name);
+        assert_eq!(
+            match_result.matched_destinations[0].r#type,
+            Some(rail.destination_type),
+            "{}",
+            rail.name
+        );
+        if rail.case_fold {
+            assert!(
+                match_result.matched_destinations[0]
+                    .value
+                    .eq_ignore_ascii_case(rail.address),
+                "{}",
+                rail.name
+            );
+            let lower = svc
+                .verify(
+                    &secret_key_uri(
+                        rail.scheme,
+                        &rail.address.to_ascii_lowercase(),
+                        encrypted,
+                        &added.secret,
+                    ),
+                    None,
+                )
+                .await
+                .unwrap();
+            assert_eq!(lower.status, VerifyStatus::Match, "{}", rail.name);
+        } else {
+            assert_eq!(
+                match_result.matched_destinations[0].value, rail.address,
+                "{}",
+                rail.name
+            );
+        }
+
+        let tampered = svc
+            .verify(
+                &secret_key_uri(rail.scheme, rail.swapped, encrypted, &added.secret),
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(tampered.status, VerifyStatus::Tampered, "{}", rail.name);
+
+        let bare = svc.verify(rail.address, None).await.unwrap();
+        assert_eq!(bare.status, VerifyStatus::Unknown, "{}", rail.name);
+    }
+}

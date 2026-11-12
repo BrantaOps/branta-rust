@@ -7,6 +7,8 @@
 //! every payment, and every logo-bearing field, as of the 2026-09 logo-URL validation hardening
 //! -- see `CLAUDE.md`.
 
+use std::time::Duration;
+
 use async_trait::async_trait;
 use hmac::{Hmac, KeyInit, Mac};
 use percent_encoding::{utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
@@ -49,7 +51,7 @@ pub trait BrantaClientTrait: Send + Sync {
     ) -> Result<bool, BrantaError>;
 }
 
-pub struct BrantaClient {
+pub(crate) struct BrantaClient {
     http: reqwest::Client,
     default_options: BrantaApiOptions,
     /// Sent on payment lookups when set. Live integration tests pass
@@ -63,9 +65,15 @@ pub struct BrantaClient {
 }
 
 impl BrantaClient {
+    /// Constructs a client with a 30s HTTP timeout so hung networks become
+    /// [`BrantaError::Incomplete`] on verify.
     pub fn new(default_options: BrantaApiOptions) -> Self {
+        let http = reqwest::Client::builder()
+            .timeout(Duration::from_secs(30))
+            .build()
+            .expect("reqwest client with timeout");
         Self {
-            http: reqwest::Client::new(),
+            http,
             default_options,
             integration_metrics_token: None,
             #[cfg(test)]
@@ -225,7 +233,20 @@ impl BrantaClientTrait for BrantaClient {
             return Ok(Vec::new());
         }
 
-        let payments: Vec<Payment> = serde_json::from_slice(&bytes)?;
+        let value: serde_json::Value = match serde_json::from_slice(&bytes) {
+            Ok(value) => value,
+            // Malformed JSON — unfinished lookup, not a crash.
+            Err(_) => return Err(BrantaError::Incomplete),
+        };
+        if !value.is_array() {
+            // Match JS/Kotlin/Swift: non-array 200 bodies decode as an empty list.
+            return Ok(Vec::new());
+        }
+        let payments: Vec<Payment> = match serde_json::from_value(value) {
+            Ok(payments) => payments,
+            // Bad row shape — unfinished lookup, not a crash.
+            Err(_) => return Err(BrantaError::Incomplete),
+        };
 
         self.verify_logo_urls(&base_url, &payments)?;
 
@@ -362,7 +383,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn get_payments_returns_empty_on_malformed_json() {
+    async fn get_payments_malformed_json_is_incomplete() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .respond_with(ResponseTemplate::new(200).set_body_string("not json"))
@@ -371,7 +392,32 @@ mod tests {
 
         let client = client_for(&server);
         let err = client.get_payments("value", None).await.unwrap_err();
-        assert!(matches!(err, BrantaError::Json(_)));
+        assert!(matches!(err, BrantaError::Incomplete));
+    }
+
+    #[tokio::test]
+    async fn get_payments_bad_row_shape_is_incomplete() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("[1]"))
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server);
+        let err = client.get_payments("value", None).await.unwrap_err();
+        assert!(matches!(err, BrantaError::Incomplete));
+    }
+
+    #[tokio::test]
+    async fn get_payments_non_array_body_is_empty() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"payments":[]}"#))
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server);
+        assert!(client.get_payments("value", None).await.unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -592,9 +638,13 @@ mod tests {
             .mount(&server)
             .await;
 
-        let mut opts = options();
-        opts.api_key = Some("test-key".to_string());
-        opts.hmac_secret = Some("shared-secret".to_string());
+        #[allow(deprecated)]
+        let opts = {
+            let mut opts = options();
+            opts.api_key = Some("test-key".to_string());
+            opts.hmac_secret = Some("shared-secret".to_string());
+            opts
+        };
         let client = BrantaClient::new(opts).with_base_url_override(server.uri());
         client.post_payment(Payment::default(), None).await.unwrap();
     }
