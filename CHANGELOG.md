@@ -53,3 +53,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Recognize signet and regtest Ark addresses (`tark1`) as `ark_address`, alongside mainnet `ark1`. Strict-mode hash-ZK lookup and registration treat them the same way as `ark1`.
+
+## [3.2.2] - 2026-09-30
+
+### Changed
+- **Breaking:** `BrantaError::LogoUrlDomainMismatch` changed from a unit variant to `LogoUrlDomainMismatch(String)`, carrying the name of the field that failed the origin check (e.g. `platform_logo_url`, `parent_platform.logo_url`). Code matching `BrantaError::LogoUrlDomainMismatch` must change to `BrantaError::LogoUrlDomainMismatch(_)` (or bind the field name). Released as a patch version alongside the rest of the sextet; despite being source-breaking for exhaustive matches, treat this as a breaking change when upgrading.
+
+### Fixed
+- Fixed a same-origin validation gap: if the first payment in a `get_payments` response had no `platform_logo_url`, validation silently stopped checking every later payment's logo URLs entirely. `BrantaClient::verify_logo_urls` now runs independently per payment, and now also checks `platform_logo_light_url` and `parent_platform`/`child_platform`'s `logo_url`/`logo_light_url` against the configured base URL's origin, not just `platform_logo_url`.
+
+## [3.2.1] - 2026-08-29
+
+### Fixed
+- `get_payments_by_qr_code` now verifies that the plaintext Bitcoin address parsed from a scanned QR code matches the address decrypted via `branta_id`/`branta_secret`, returning `Err(BrantaError::Tampered)` on mismatch. Closes a gap where an attacker could swap the visible address in a `bitcoin:` URI while leaving a legitimate, verified `branta_id`/`branta_secret` pair untouched (ported from `branta-js` 3.2.1). This is the one deliberate exception to `decrypt_destinations`'s otherwise-total swallow-all-decrypt-errors rule.
+
+## [3.2.0] - 2026-07-25
+
+### Added
+- Initial release of the Branta Rust SDK.
+- Feature-parity port of `branta-dotnet` 3.2.0 (and `branta-js`, `branta-dart`, `branta-python`, `branta-kotlin`).
+- `BrantaService` with `get_payments`, `get_payments_by_qr_code`, `add_payment`, and `is_api_key_valid`.
+- `PaymentBuilder` fluent builder with ZK support, metadata encryption, and child platform tagging.
+- `QrParser` handles `bitcoin:`/`lightning:` URIs and plain-text values, with full query-string decoding.
+- AES-256-GCM encryption with deterministic and random nonce modes.
+- Zero-knowledge (ZK) destination support for Bitcoin addresses, BOLT-11, Ark, and silent payments.
+- Metadata DEK-envelope encryption.
+- `PrivacyMode::Strict` (default) and `PrivacyMode::Loose` enforcement.
+- HMAC-SHA256 request signing support for parent platform flows.
+- Full unit test coverage via mocked client/AES/secret-generator dependencies (`mockall`, `wiremock`).
+- Integration tests against staging and production, reusing the same example QR-code fixtures as `branta-python`.
