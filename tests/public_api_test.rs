@@ -8,7 +8,7 @@ use branta::{
 
 #[test]
 fn consumer_types_are_reachable() {
-    // Fourteen DestinationType variants; usdc_ton stays deferred.
+    // Eighteen DestinationType variants; usdc_ton stays deferred.
     let all = [
         DestinationType::BitcoinAddress,
         DestinationType::Bolt11,
@@ -24,8 +24,20 @@ fn consumer_types_are_reachable() {
         DestinationType::UsdtTon,
         DestinationType::UsdtSolana,
         DestinationType::UsdcSolana,
+        DestinationType::UsdtBase,
+        DestinationType::UsdcBase,
+        DestinationType::UsdtArbitrum,
+        DestinationType::UsdcArbitrum,
     ];
-    assert_eq!(all.len(), 14);
+    assert_eq!(all.len(), 18);
+    assert_eq!(
+        serde_json::to_string(&DestinationType::UsdtBase).unwrap(),
+        "\"usdt_base\""
+    );
+    assert_eq!(
+        serde_json::to_string(&DestinationType::UsdcArbitrum).unwrap(),
+        "\"usdc_arbitrum\""
+    );
     assert_eq!(
         serde_json::to_string(&DestinationType::UsdtEthereum).unwrap(),
         "\"usdt_ethereum\""
@@ -78,16 +90,18 @@ fn family_helpers_are_not_reexported_from_lib() {
     )
     .expect("src/lib.rs");
     let forbidden = [
+        "EVM_TOKEN_RAILS",
+        "EvmTokenRail",
+        "evm_token_type",
         "SECRET_KEY_URI_FAMILIES",
+        "secret_key_uri_family",
         "is_secret_key_address_type",
-        "is_polygon_evm_destination_type",
         "POLYGON_EVM_DESTINATION_TYPES",
         "ETHEREUM_EVM_DESTINATION_TYPES",
         "BSC_EVM_DESTINATION_TYPES",
         "TRON_DESTINATION_TYPES",
         "TON_DESTINATION_TYPES",
         "SOLANA_DESTINATION_TYPES",
-        "secret_key_uri_family",
         "BrantaClient",
         "QrParser",
     ];

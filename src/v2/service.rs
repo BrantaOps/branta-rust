@@ -574,6 +574,10 @@ fn destination_type_name(r#type: Option<DestinationType>) -> String {
         Some(DestinationType::UsdtTon) => "usdt_ton",
         Some(DestinationType::UsdtSolana) => "usdt_solana",
         Some(DestinationType::UsdcSolana) => "usdc_solana",
+        Some(DestinationType::UsdtBase) => "usdt_base",
+        Some(DestinationType::UsdcBase) => "usdc_base",
+        Some(DestinationType::UsdtArbitrum) => "usdt_arbitrum",
+        Some(DestinationType::UsdcArbitrum) => "usdc_arbitrum",
         None => "unknown",
     }
     .to_string()
@@ -628,13 +632,15 @@ mod tests {
     use std::sync::Mutex;
 
     use super::super::encryption::encrypt;
+    use crate::enums::{EvmTokenRail, EVM_TOKEN_RAILS};
 
     const ADDRESS: &str = "bc1qmerchant";
     const SECRET: &str = "branta-secret";
     const USDT_POLYGON: &str = "0x278297528c32eCa01295B0d2135984d3442ec963";
     const USDC_POLYGON: &str = "0xAb5801a7D398351b8bE11C439e05C5B3259aeC9B";
-    const SIBLING_USDT: &str = "0x2222222222222222222222222222222222222222";
-    const SWAPPED_POLYGON: &str = "0x1111111111111111111111111111111111111111";
+    const DEPOSIT: &str = "0xAbCdEf0123456789aBcDeF0123456789AbCdEf01";
+    const SIBLING_DEPOSIT: &str = "0x2222222222222222222222222222222222222222";
+    const SWAPPED_DEPOSIT: &str = "0x1111111111111111111111111111111111111111";
 
     struct ScriptedClient {
         payments: Mutex<Result<Vec<Payment>, bool>>,
@@ -785,10 +791,54 @@ mod tests {
         format!("bitcoin:{address}?branta_id={encrypted}&branta_secret={secret}")
     }
 
-    fn pol_uri(address: &str, encrypted: &str, secret: &str) -> String {
+    fn rail(destination_type: DestinationType) -> &'static EvmTokenRail {
+        EVM_TOKEN_RAILS
+            .iter()
+            .find(|rail| rail.destination_type == destination_type)
+            .unwrap()
+    }
+
+    /// ERC-681 transfer URI for `destination_type` with the branta params.
+    fn transfer_uri(
+        destination_type: DestinationType,
+        address: &str,
+        encrypted: &str,
+        secret: &str,
+    ) -> String {
+        let rail = rail(destination_type);
         format!(
-            "pol:{address}?value=50&user=send&currency=USD&branta_id={encrypted}&branta_secret={secret}"
+            "ethereum:{}@{}/transfer?address={address}&uint256=50000000&branta_id={encrypted}&branta_secret={secret}",
+            rail.contract, rail.chain_id
         )
+    }
+
+    /// A payment with one encrypted destination per `(type, address)` pair.
+    fn payment_of(items: &[(DestinationType, &str)]) -> (Payment, Vec<String>) {
+        let mut ciphertexts = Vec::new();
+        let destinations = items
+            .iter()
+            .enumerate()
+            .map(|(i, (destination_type, address))| {
+                let dest =
+                    encrypted_polygon(address, *destination_type, SECRET, &format!("zk-{i}"));
+                ciphertexts.push(dest.value.clone());
+                dest
+            })
+            .collect();
+        (
+            Payment {
+                destinations,
+                ..Payment::default()
+            },
+            ciphertexts,
+        )
+    }
+
+    async fn verify_transfer(payment: Payment, qr: &str) -> crate::models::VerifyResult {
+        service(ScriptedClient::payments(vec![payment]))
+            .verify(qr, None)
+            .await
+            .unwrap()
     }
 
     #[tokio::test]
@@ -985,156 +1035,171 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pol_usdt_match_ignores_amount_query_and_sets_matched_destinations() {
-        let dest = encrypted_polygon(
-            USDT_POLYGON,
-            DestinationType::UsdtPolygon,
-            SECRET,
-            "zk-usdt",
-        );
-        let ciphertext = dest.value.clone();
-        let svc = service(ScriptedClient::payments(vec![Payment {
-            destinations: vec![dest],
-            ..Payment::default()
-        }]));
-        let result = svc
-            .verify(&pol_uri(USDT_POLYGON, &ciphertext, SECRET), None)
-            .await
-            .unwrap();
-        assert_eq!(result.status, VerifyStatus::Match);
-        assert_eq!(
-            result.payments[0].destinations[0].r#type,
-            Some(DestinationType::UsdtPolygon)
-        );
-        assert_eq!(result.payments[0].destinations[0].value, USDT_POLYGON);
-        assert_eq!(result.matched_destinations.len(), 1);
-        assert_eq!(
-            result.matched_destinations[0].r#type,
-            Some(DestinationType::UsdtPolygon)
-        );
+    async fn every_rail_matches_and_sets_matched_destinations() {
+        for rail in EVM_TOKEN_RAILS {
+            let t = rail.destination_type;
+            let (payment, cipher) = payment_of(&[(t, DEPOSIT)]);
+            let result =
+                verify_transfer(payment, &transfer_uri(t, DEPOSIT, &cipher[0], SECRET)).await;
+            assert_eq!(result.status, VerifyStatus::Match, "{t:?}");
+            assert_eq!(result.matched_destinations.len(), 1, "{t:?}");
+            assert_eq!(result.matched_destinations[0].r#type, Some(t));
+            assert_eq!(result.matched_destinations[0].value, DEPOSIT);
+            assert!(result.verify_url.contains("#k-zk-0="), "{t:?}");
+        }
     }
 
     #[tokio::test]
-    async fn pol_usdt_case_insensitive_match() {
-        let dest = encrypted_polygon(
-            USDT_POLYGON,
-            DestinationType::UsdtPolygon,
-            SECRET,
-            "zk-poly",
-        );
-        let ciphertext = dest.value.clone();
-        let svc = service(ScriptedClient::payments(vec![Payment {
-            destinations: vec![dest],
-            ..Payment::default()
-        }]));
-        let result = svc
-            .verify(
-                &pol_uri(&USDT_POLYGON.to_ascii_lowercase(), &ciphertext, SECRET),
-                None,
+    async fn every_rail_matches_a_lowercase_deposit() {
+        for rail in EVM_TOKEN_RAILS {
+            let t = rail.destination_type;
+            let (payment, cipher) = payment_of(&[(t, DEPOSIT)]);
+            let qr = transfer_uri(t, &DEPOSIT.to_ascii_lowercase(), &cipher[0], SECRET);
+            let result = verify_transfer(payment, &qr).await;
+            assert_eq!(result.status, VerifyStatus::Match, "{t:?}");
+            assert_eq!(result.matched_destinations[0].value, DEPOSIT);
+        }
+    }
+
+    #[tokio::test]
+    async fn upper_case_0x_deposit_prefix_matches() {
+        let t = DestinationType::UsdtBase;
+        let (payment, cipher) = payment_of(&[(t, DEPOSIT)]);
+        let mixed = format!("0X{}", &DEPOSIT[2..]);
+        let result = verify_transfer(payment, &transfer_uri(t, &mixed, &cipher[0], SECRET)).await;
+        assert_eq!(result.status, VerifyStatus::Match);
+    }
+
+    #[tokio::test]
+    async fn every_rail_swapped_deposit_is_tampered() {
+        for rail in EVM_TOKEN_RAILS {
+            let t = rail.destination_type;
+            let (payment, cipher) = payment_of(&[(t, DEPOSIT)]);
+            let result = verify_transfer(
+                payment,
+                &transfer_uri(t, SWAPPED_DEPOSIT, &cipher[0], SECRET),
             )
-            .await
-            .unwrap();
+            .await;
+            assert_eq!(result.status, VerifyStatus::Tampered, "{t:?}");
+            assert!(result.payments.is_empty());
+            assert!(result.matched_destinations.is_empty());
+            assert!(!result.verify_url.contains('#'));
+        }
+    }
+
+    #[tokio::test]
+    async fn contract_on_the_wrong_chain_is_unknown_without_a_lookup() {
+        for rail in EVM_TOKEN_RAILS {
+            let wrong_chain = if rail.chain_id == 1 { 137 } else { 1 };
+            let qr = format!(
+                "ethereum:{}@{wrong_chain}/transfer?address={DEPOSIT}&branta_id=abc&branta_secret={SECRET}",
+                rail.contract
+            );
+            let result = service(ScriptedClient::incomplete())
+                .verify(&qr, None)
+                .await
+                .unwrap();
+            assert_eq!(
+                result.status,
+                VerifyStatus::Unknown,
+                "{:?}",
+                rail.destination_type
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn every_rail_without_branta_params_is_unknown_without_a_lookup() {
+        for rail in EVM_TOKEN_RAILS {
+            let qr = format!(
+                "ethereum:{}@{}/transfer?address={DEPOSIT}&uint256=1",
+                rail.contract, rail.chain_id
+            );
+            let result = service(ScriptedClient::incomplete())
+                .verify(&qr, None)
+                .await
+                .unwrap();
+            assert_eq!(
+                result.status,
+                VerifyStatus::Unknown,
+                "{:?}",
+                rail.destination_type
+            );
+            assert!(!result.verify_url.contains('#'));
+        }
+    }
+
+    #[tokio::test]
+    async fn dual_token_payment_binds_only_the_scanned_token() {
+        let usdt = DestinationType::UsdtBase;
+        let usdc = DestinationType::UsdcBase;
+        let (payment, cipher) = payment_of(&[(usdt, DEPOSIT), (usdc, DEPOSIT)]);
+        let usdc_cipher = payment.destinations[1].value.clone();
+        let result =
+            verify_transfer(payment, &transfer_uri(usdt, DEPOSIT, &cipher[0], SECRET)).await;
         assert_eq!(result.status, VerifyStatus::Match);
+        assert_eq!(result.matched_destinations.len(), 1);
+        assert_eq!(result.matched_destinations[0].r#type, Some(usdt));
+        let dests = &result.payments[0].destinations;
+        assert!(!dests[0].is_encrypted);
+        assert!(dests[1].is_encrypted);
+        assert_eq!(dests[1].value, usdc_cipher);
     }
 
     #[tokio::test]
-    async fn pol_usdt_0x_prefix_case_insensitive_match() {
-        let dest = encrypted_polygon(
-            USDT_POLYGON,
-            DestinationType::UsdtPolygon,
-            SECRET,
-            "zk-poly",
-        );
-        let ciphertext = dest.value.clone();
-        let svc = service(ScriptedClient::payments(vec![Payment {
-            destinations: vec![dest],
-            ..Payment::default()
-        }]));
-        let mixed = format!("0X{}", &USDT_POLYGON[2..]);
-        let result = svc
-            .verify(&pol_uri(&mixed, &ciphertext, SECRET), None)
-            .await
-            .unwrap();
-        assert_eq!(result.status, VerifyStatus::Match);
+    async fn usdc_scan_against_a_usdt_only_payment_is_unknown() {
+        let (payment, cipher) = payment_of(&[(DestinationType::UsdtBase, DEPOSIT)]);
+        let qr = transfer_uri(DestinationType::UsdcBase, DEPOSIT, &cipher[0], SECRET);
+        let result = verify_transfer(payment, &qr).await;
+        assert_eq!(result.status, VerifyStatus::Unknown);
+        assert!(result.matched_destinations.is_empty());
     }
 
     #[tokio::test]
-    async fn pol_usdt_swapped_is_tampered() {
-        let dest = encrypted_polygon(
-            USDT_POLYGON,
-            DestinationType::UsdtPolygon,
-            SECRET,
-            "zk-poly",
-        );
-        let ciphertext = dest.value.clone();
-        let svc = service(ScriptedClient::payments(vec![Payment {
-            destinations: vec![dest],
-            ..Payment::default()
-        }]));
-        let result = svc
-            .verify(&pol_uri(SWAPPED_POLYGON, &ciphertext, SECRET), None)
-            .await
-            .unwrap();
-        assert_eq!(result.status, VerifyStatus::Tampered);
-        assert!(result.payments.is_empty());
-    }
-
-    #[tokio::test]
-    async fn bare_usdt_address_is_unknown() {
-        let client = ScriptedClient::capture();
-        let svc = service(client);
-        let result = svc.verify(USDT_POLYGON, None).await.unwrap();
+    async fn ethereum_scan_against_a_polygon_only_payment_is_unknown() {
+        let (payment, cipher) = payment_of(&[(DestinationType::UsdtPolygon, DEPOSIT)]);
+        let qr = transfer_uri(DestinationType::UsdtEthereum, DEPOSIT, &cipher[0], SECRET);
+        let result = verify_transfer(payment, &qr).await;
         assert_eq!(result.status, VerifyStatus::Unknown);
     }
 
     #[tokio::test]
-    async fn pol_without_branta_params_is_unknown() {
-        let svc = service(ScriptedClient::capture());
-        let result = svc
-            .verify(&format!("pol:{USDT_POLYGON}?value=50"), None)
-            .await
-            .unwrap();
-        assert_eq!(result.status, VerifyStatus::Unknown);
+    async fn same_type_sibling_with_another_address_stays_encrypted() {
+        let t = DestinationType::UsdtArbitrum;
+        let (payment, cipher) = payment_of(&[(t, SIBLING_DEPOSIT), (t, DEPOSIT)]);
+        let sibling_cipher = cipher[0].clone();
+        let result = verify_transfer(payment, &transfer_uri(t, DEPOSIT, &cipher[1], SECRET)).await;
+        assert_eq!(result.status, VerifyStatus::Match);
+        let dests = &result.payments[0].destinations;
+        assert!(dests[0].is_encrypted);
+        assert_eq!(dests[0].value, sibling_cipher);
+        assert!(!dests[1].is_encrypted);
+        assert_eq!(result.matched_destinations.len(), 1);
     }
 
     #[tokio::test]
-    async fn pol_ignores_sibling_bitcoin_rail() {
-        let usdt = encrypted_polygon(
-            USDT_POLYGON,
-            DestinationType::UsdtPolygon,
-            SECRET,
-            "zk-usdt",
-        );
-        let btc = encrypted_bitcoin(ADDRESS, SECRET, "zk-btc");
-        let ciphertext = usdt.value.clone();
-        let svc = service(ScriptedClient::payments(vec![Payment {
-            destinations: vec![btc, usdt],
-            ..Payment::default()
-        }]));
-        let result = svc
-            .verify(&pol_uri(USDT_POLYGON, &ciphertext, SECRET), None)
-            .await
-            .unwrap();
+    async fn erc681_scan_leaves_a_bitcoin_sibling_encrypted() {
+        let t = DestinationType::UsdtPolygon;
+        let (mut payment, cipher) = payment_of(&[(t, DEPOSIT)]);
+        payment
+            .destinations
+            .insert(0, encrypted_bitcoin(ADDRESS, SECRET, "zk-btc"));
+        let result = verify_transfer(payment, &transfer_uri(t, DEPOSIT, &cipher[0], SECRET)).await;
         assert_eq!(result.status, VerifyStatus::Match);
         let dests = &result.payments[0].destinations;
         assert_eq!(dests[0].r#type, Some(DestinationType::BitcoinAddress));
         assert!(dests[0].is_encrypted);
         assert!(!dests[1].is_encrypted);
-        assert_eq!(dests[1].value, USDT_POLYGON);
+        assert_eq!(dests[1].value, DEPOSIT);
     }
 
     #[tokio::test]
-    async fn bitcoin_ignores_sibling_usdt_rail() {
-        let usdt = encrypted_polygon(
-            USDT_POLYGON,
-            DestinationType::UsdtPolygon,
-            SECRET,
-            "zk-usdt",
-        );
-        let btc = encrypted_bitcoin(ADDRESS, SECRET, "zk-btc");
-        let ciphertext = btc.value.clone();
+    async fn bitcoin_scan_leaves_an_evm_sibling_encrypted() {
+        let dest = encrypted_bitcoin(ADDRESS, SECRET, "zk-btc");
+        let ciphertext = dest.value.clone();
+        let (evm, _) = payment_of(&[(DestinationType::UsdtPolygon, DEPOSIT)]);
         let svc = service(ScriptedClient::payments(vec![Payment {
-            destinations: vec![btc, usdt],
+            destinations: vec![dest, evm.destinations[0].clone()],
             ..Payment::default()
         }]));
         let result = svc
@@ -1144,171 +1209,95 @@ mod tests {
         assert_eq!(result.status, VerifyStatus::Match);
         let dests = &result.payments[0].destinations;
         assert!(!dests[0].is_encrypted);
-        assert_eq!(dests[0].value, ADDRESS);
         assert!(dests[1].is_encrypted);
         assert_eq!(dests[1].r#type, Some(DestinationType::UsdtPolygon));
     }
 
     #[tokio::test]
-    async fn pol_match_if_any_dual_usdt_leaves_sibling_encrypted() {
-        let matched = encrypted_polygon(
-            USDT_POLYGON,
-            DestinationType::UsdtPolygon,
-            SECRET,
-            "zk-usdt",
-        );
-        let sibling =
-            encrypted_polygon(SIBLING_USDT, DestinationType::UsdtPolygon, SECRET, "zk-sib");
-        let ciphertext = matched.value.clone();
-        let sibling_cipher = sibling.value.clone();
-        let svc = service(ScriptedClient::payments(vec![Payment {
-            destinations: vec![sibling, matched],
-            ..Payment::default()
-        }]));
-        let result = svc
-            .verify(&pol_uri(USDT_POLYGON, &ciphertext, SECRET), None)
-            .await
-            .unwrap();
-        assert_eq!(result.status, VerifyStatus::Match);
-        let dests = &result.payments[0].destinations;
-        assert!(dests[0].is_encrypted);
-        assert_eq!(dests[0].value, sibling_cipher);
-        assert!(!dests[1].is_encrypted);
-        assert_eq!(dests[1].value, USDT_POLYGON);
+    async fn wrong_secret_is_unknown() {
+        let t = DestinationType::UsdcArbitrum;
+        let (payment, cipher) = payment_of(&[(t, DEPOSIT)]);
+        let result = verify_transfer(
+            payment,
+            &transfer_uri(t, DEPOSIT, &cipher[0], "wrong-secret"),
+        )
+        .await;
+        assert_eq!(result.status, VerifyStatus::Unknown);
     }
 
     #[tokio::test]
-    async fn pol_usdc_match() {
-        let dest = encrypted_polygon(
-            USDC_POLYGON,
-            DestinationType::UsdcPolygon,
-            SECRET,
-            "zk-usdc",
-        );
-        let ciphertext = dest.value.clone();
-        let svc = service(ScriptedClient::payments(vec![Payment {
-            destinations: vec![dest],
-            ..Payment::default()
-        }]));
-        let result = svc
-            .verify(&pol_uri(USDC_POLYGON, &ciphertext, SECRET), None)
-            .await
-            .unwrap();
+    async fn description_is_lifted_from_decrypted_metadata() {
+        let dek = "dek-evm";
+        let metadata = r#"{"description":"USDT invoice"}"#;
+        let t = DestinationType::UsdtBase;
+        let (mut payment, cipher) = payment_of(&[(t, DEPOSIT)]);
+        payment.metadata = Some(encrypt(metadata, dek, true).unwrap());
+        payment.destinations[0].encrypted_dek = Some(encrypt(dek, SECRET, true).unwrap());
+        let result = verify_transfer(payment, &transfer_uri(t, DEPOSIT, &cipher[0], SECRET)).await;
         assert_eq!(result.status, VerifyStatus::Match);
         assert_eq!(
-            result.matched_destinations[0].r#type,
-            Some(DestinationType::UsdcPolygon)
+            result.payments[0].description.as_deref(),
+            Some("USDT invoice")
         );
     }
 
     #[tokio::test]
-    async fn pol_binds_usdt_leaves_usdc_encrypted() {
-        let usdt = encrypted_polygon(
-            USDT_POLYGON,
-            DestinationType::UsdtPolygon,
-            SECRET,
-            "zk-usdt",
-        );
-        let usdc = encrypted_polygon(
-            USDC_POLYGON,
-            DestinationType::UsdcPolygon,
-            SECRET,
-            "zk-usdc",
-        );
-        let ciphertext = usdt.value.clone();
-        let svc = service(ScriptedClient::payments(vec![Payment {
-            destinations: vec![usdt, usdc],
-            ..Payment::default()
-        }]));
-        let result = svc
-            .verify(&pol_uri(USDT_POLYGON, &ciphertext, SECRET), None)
-            .await
-            .unwrap();
-        assert_eq!(result.status, VerifyStatus::Match);
-        let dests = &result.payments[0].destinations;
-        assert!(!dests[0].is_encrypted && dests[0].r#type == Some(DestinationType::UsdtPolygon));
-        assert!(dests[1].is_encrypted && dests[1].r#type == Some(DestinationType::UsdcPolygon));
-    }
-
-    #[tokio::test]
-    async fn same_address_usdt_and_usdc_both_match() {
-        let usdt = encrypted_polygon(
-            USDT_POLYGON,
-            DestinationType::UsdtPolygon,
-            SECRET,
-            "zk-usdt",
-        );
-        let usdc = encrypted_polygon(
-            USDT_POLYGON,
-            DestinationType::UsdcPolygon,
-            SECRET,
-            "zk-usdc",
-        );
-        let ciphertext = usdt.value.clone();
-        let svc = service(ScriptedClient::payments(vec![Payment {
-            destinations: vec![usdt, usdc],
-            ..Payment::default()
-        }]));
-        let result = svc
-            .verify(&pol_uri(USDT_POLYGON, &ciphertext, SECRET), None)
-            .await
-            .unwrap();
-        assert_eq!(result.status, VerifyStatus::Match);
-        assert_eq!(result.matched_destinations.len(), 2);
-    }
-
-    #[tokio::test]
-    async fn pol_wrong_secret_is_unknown() {
-        let dest = encrypted_polygon(
-            USDT_POLYGON,
-            DestinationType::UsdtPolygon,
-            SECRET,
-            "zk-poly",
-        );
-        let ciphertext = dest.value.clone();
-        let svc = service(ScriptedClient::payments(vec![Payment {
-            destinations: vec![dest],
-            ..Payment::default()
-        }]));
-        let result = svc
-            .verify(&pol_uri(USDT_POLYGON, &ciphertext, "wrong-secret"), None)
+    async fn bare_address_is_unknown() {
+        let result = service(ScriptedClient::incomplete())
+            .verify(USDT_POLYGON, None)
             .await
             .unwrap();
         assert_eq!(result.status, VerifyStatus::Unknown);
     }
 
     #[tokio::test]
-    async fn pol_description_is_lifted_from_decrypted_metadata() {
-        let dek = "dek-poly";
-        let metadata = r#"{"description":"USDT invoice"}"#;
-        let encrypted_metadata = encrypt(metadata, dek, true).unwrap();
-        let encrypted_dek = encrypt(dek, SECRET, true).unwrap();
-        let mut dest = encrypted_polygon(
-            USDT_POLYGON,
-            DestinationType::UsdtPolygon,
-            SECRET,
-            "zk-usdt",
-        );
-        dest.encrypted_dek = Some(encrypted_dek);
-        let ciphertext = dest.value.clone();
-        let svc = service(ScriptedClient::payments(vec![Payment {
-            metadata: Some(encrypted_metadata),
-            destinations: vec![dest],
-            ..Payment::default()
-        }]));
-        let result = svc
-            .verify(&pol_uri(USDT_POLYGON, &ciphertext, SECRET), None)
-            .await
-            .unwrap();
-        assert_eq!(result.status, VerifyStatus::Match);
-        assert_eq!(
-            result.payments[0].description.as_deref(),
-            Some("USDT invoice")
-        );
-        assert_eq!(
-            result.matched_destinations[0].r#type,
-            Some(DestinationType::UsdtPolygon)
-        );
+    async fn other_functions_authority_forms_and_unparseable_input_are_unknown_without_a_lookup() {
+        let t = DestinationType::UsdcBase;
+        let c = rail(t).contract;
+        let tail = format!("address={DEPOSIT}&branta_id=abc&branta_secret={SECRET}");
+        let inputs = [
+            format!("ethereum:{c}@8453/approve?{tail}"),
+            format!("ethereum:{c}@8453/transferFrom?{tail}"),
+            format!("ethereum://{c}@8453/transfer?{tail}"),
+            format!("ethereum:{c}/transfer?{tail}"),
+            format!("ethereum:{c}@0x2105/transfer?{tail}"),
+            "ethereum://[bad/transfer".to_string(),
+            "bitcoin://[bad".to_string(),
+            format!("ethereum:{c}@{}/transfer?{tail}", "9".repeat(5000)),
+            format!("ethereum:{c}@8453/transfer#x?{tail}"),
+        ];
+        for qr in inputs {
+            let result = service(ScriptedClient::incomplete())
+                .verify(&qr, None)
+                .await
+                .unwrap();
+            assert_eq!(
+                result.status,
+                VerifyStatus::Unknown,
+                "{}",
+                qr.chars().take(40).collect::<String>()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn removed_chain_schemes_are_unknown_without_a_lookup() {
+        for (scheme, address) in [
+            ("pol", USDT_POLYGON),
+            ("eth", USDT_ETHEREUM),
+            ("bsc", USDT_ETHEREUM),
+            ("tron", USDT_TRON),
+            ("ton", "UQBexample"),
+            ("sol", USDC_SOLANA),
+        ] {
+            let qr = format!("{scheme}:{address}?value=50&branta_id=abc&branta_secret={SECRET}");
+            let result = service(ScriptedClient::incomplete())
+                .verify(&qr, None)
+                .await
+                .unwrap();
+            assert_eq!(result.status, VerifyStatus::Unknown, "{scheme}");
+            assert!(!result.verify_url.contains('#'));
+        }
     }
 
     #[tokio::test]
@@ -1341,6 +1330,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn add_payment_encrypts_every_evm_rail() {
+        for rail in EVM_TOKEN_RAILS {
+            let t = rail.destination_type;
+            let svc = service_with_secret(ScriptedClient::capture(), Box::new(PolygonSecret));
+            let caller = crate::PaymentBuilder::new()
+                .add_destination(DEPOSIT, Some(t))
+                .build();
+            let result = svc.add_payment(&caller, None).await.unwrap();
+            assert_eq!(caller.destinations[0].value, DEPOSIT, "{t:?}");
+            let posted = &result.payment.destinations[0];
+            assert_eq!(posted.r#type, Some(t));
+            assert_ne!(posted.value, DEPOSIT);
+            assert_eq!(
+                crate::v2::encryption::decrypt(&posted.value, "polygon-secret").unwrap(),
+                DEPOSIT,
+                "{t:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn add_payment_bare_ox_without_type_is_unsupported() {
         let svc = service(ScriptedClient::capture());
         let payment = crate::PaymentBuilder::new()
@@ -1353,96 +1363,6 @@ mod tests {
     const USDT_ETHEREUM: &str = "0xBF5550253939187432Ef4dccE8089765d3DCb47f";
     const USDT_TRON: &str = "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb";
     const USDC_SOLANA: &str = "7EqQdEULxWcraVx3mXKFjc84LhCkMGZCkRuDofycyinf";
-
-    fn chain_uri(scheme: &str, address: &str, encrypted: &str, secret: &str) -> String {
-        format!("{scheme}:{address}?value=50&branta_id={encrypted}&branta_secret={secret}")
-    }
-
-    async fn verify_chain_match(
-        scheme: &str,
-        address: &str,
-        destination_type: DestinationType,
-    ) -> crate::models::VerifyResult {
-        let dest = encrypted_polygon(address, destination_type, SECRET, "zk-chain");
-        let ciphertext = dest.value.clone();
-        let svc = service(ScriptedClient::payments(vec![Payment {
-            destinations: vec![dest],
-            ..Payment::default()
-        }]));
-        let result = svc
-            .verify(&chain_uri(scheme, address, &ciphertext, SECRET), None)
-            .await
-            .unwrap();
-        assert_eq!(result.status, VerifyStatus::Match);
-        assert_eq!(result.matched_destinations.len(), 1);
-        assert_eq!(
-            result.matched_destinations[0].r#type,
-            Some(destination_type)
-        );
-        assert_eq!(result.matched_destinations[0].value, address);
-        result
-    }
-
-    #[tokio::test]
-    async fn eth_usdt_match() {
-        verify_chain_match("eth", USDT_ETHEREUM, DestinationType::UsdtEthereum).await;
-    }
-
-    #[tokio::test]
-    async fn tron_usdt_match() {
-        verify_chain_match("tron", USDT_TRON, DestinationType::UsdtTron).await;
-    }
-
-    #[tokio::test]
-    async fn sol_usdc_match() {
-        verify_chain_match("sol", USDC_SOLANA, DestinationType::UsdcSolana).await;
-    }
-
-    #[tokio::test]
-    async fn tron_swapped_is_tampered() {
-        let dest = encrypted_polygon(USDT_TRON, DestinationType::UsdtTron, SECRET, "zk-tron");
-        let ciphertext = dest.value.clone();
-        let svc = service(ScriptedClient::payments(vec![Payment {
-            destinations: vec![dest],
-            ..Payment::default()
-        }]));
-        let swapped = format!("{}x", &USDT_TRON[..USDT_TRON.len() - 1]);
-        let result = svc
-            .verify(&chain_uri("tron", &swapped, &ciphertext, SECRET), None)
-            .await
-            .unwrap();
-        assert_eq!(result.status, VerifyStatus::Tampered);
-    }
-
-    #[tokio::test]
-    async fn eth_scheme_ignores_polygon_family_rail() {
-        let poly = encrypted_polygon(
-            USDT_POLYGON,
-            DestinationType::UsdtPolygon,
-            SECRET,
-            "zk-poly",
-        );
-        let eth = encrypted_polygon(
-            USDT_ETHEREUM,
-            DestinationType::UsdtEthereum,
-            SECRET,
-            "zk-eth",
-        );
-        let ciphertext = eth.value.clone();
-        let svc = service(ScriptedClient::payments(vec![Payment {
-            destinations: vec![poly, eth],
-            ..Payment::default()
-        }]));
-        let result = svc
-            .verify(&chain_uri("eth", USDT_ETHEREUM, &ciphertext, SECRET), None)
-            .await
-            .unwrap();
-        assert_eq!(result.status, VerifyStatus::Match);
-        let dests = &result.payments[0].destinations;
-        assert!(dests[0].is_encrypted);
-        assert!(!dests[1].is_encrypted);
-        assert_eq!(result.matched_destinations.len(), 1);
-    }
 
     #[tokio::test]
     async fn bare_stablecoin_addresses_are_unknown_without_a_lookup() {

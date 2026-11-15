@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.4.0] - 2026-11-15
+
+### Added
+- `DestinationType::UsdtBase`, `UsdcBase`, `UsdtArbitrum`, and `UsdcArbitrum`. `add_payment` encrypts them with a random secret.
+- `verify` accepts an ERC-681 token transfer, `ethereum:<contract>@<chainId>/transfer?address=<deposit>`, with `branta_id` / `branta_secret`, for USDT and USDC on Ethereum, Polygon, BNB Smart Chain, Base, and Arbitrum. The chain id and token contract select exactly one destination type. `uint256` is not bound. The contract matches case-insensitively and the deposit compares case-insensitively.
+- Live staging coverage for all ten EVM rails, plus the fifteen ERC-681 example QR codes from the developer docs.
+
+### Changed
+- **Breaking:** `pol:`, `eth:`, `bsc:`, `tron:`, `ton:`, and `sol:` URIs no longer verify. They are `unknown` and do not GET. Use the ERC-681 form for EVM stablecoins. `add_payment` still encrypts `usdt_tron`, `usdt_ton`, `usdt_solana`, and `usdc_solana`, but they have no verify URI yet.
+- A scan binds only the destination type named by its chain id and contract. It no longer binds any sibling in a family. A USDC scan against a USDT-only payment is `unknown`.
+- `ethereum://` authority forms, `/approve`, `/transferFrom`, path parameters, ENS names, a missing chain id, hex or signed chain ids, and a missing or malformed `address` are untyped and `unknown`. A chain id of more than 15 digits is rejected.
+- The query is read before any URL fragment. A `?` after a `#` belongs to the fragment, for `bitcoin:` and `ethereum:` URIs alike.
+- Matches `@branta-ops/branta` / Python / Dart / Swift / Kotlin / branta-go 4.4.0.
+
 ## [4.3.0] - 2026-11-12
 
 ### Added
