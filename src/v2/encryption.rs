@@ -201,4 +201,19 @@ mod tests {
         let plaintext = decrypt(expected_ciphertext, "my-secret").unwrap();
         assert_eq!(plaintext, "hello world");
     }
+
+    /// Derived-key vector, asserted by every Branta SDK. The key is the normalized hash of
+    /// `LNBC10U1PTestInvoice` and the value is encrypted lowercased. Do not regenerate these
+    /// from this code.
+    #[test]
+    fn derived_key_fixed_vector_matches_every_sdk() {
+        let key = "261D7974DC0541402A222AC17973D3FF412878C1C179FCD4D866094D610B4496";
+        let expected = "WywBRexAiHTi2mnHK/W1DIN79bF1XVhU3BdC3DWpUsdhs5NMbdyZyzWsdjfuFgIV";
+
+        assert_eq!(
+            encrypt("lnbc10u1ptestinvoice", key, true).unwrap(),
+            expected
+        );
+        assert_eq!(decrypt(expected, key).unwrap(), "lnbc10u1ptestinvoice");
+    }
 }

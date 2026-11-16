@@ -116,6 +116,19 @@ mod tests {
         assert_eq!(to_normalized_hash("TEST"), to_normalized_hash("test"));
     }
 
+    /// Fixed vectors, asserted by every Branta SDK.
+    #[test]
+    fn to_normalized_hash_fixed_vector_matches_every_sdk() {
+        assert_eq!(
+            to_normalized_hash("TEST"),
+            "9F86D081884C7D659A2FEAA0C55AD015A3BF4F1B2B0B822CD15D6C15B0F00A08"
+        );
+        assert_eq!(
+            to_normalized_hash("LNBC10U1PTestInvoice"),
+            "261D7974DC0541402A222AC17973D3FF412878C1C179FCD4D866094D610B4496"
+        );
+    }
+
     #[test]
     fn fragment_encodes_reserved_characters_and_empty_is_blank() {
         let keys = IndexMap::new();
