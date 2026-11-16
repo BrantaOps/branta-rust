@@ -1,5 +1,5 @@
 //! Consumer-surface lock. Family helpers stay crate-private; this file only
-//! compiles against the public crate root (mirror Kotlin/Swift/Go/dotnet).
+//! compiles against the public crate root (mirrors the other SDKs' public-API tests).
 
 use branta::{
     BrantaApiOptions, BrantaEnvironment, BrantaError, BrantaService, DestinationType,

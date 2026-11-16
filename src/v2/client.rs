@@ -1,11 +1,10 @@
 //! Raw HTTP layer. Consumers should never call this directly -- go through [`crate::BrantaService`].
 //!
-//! Transcribed from `Branta/V2/Services/BrantaClient.cs`. Historical note: dotnet/js/dart/python
-//! previously had a bug in the logo-domain-check loop where an early `return` (instead of
-//! `continue`) meant only the first payment in a GET response list was actually domain-checked;
-//! this port never had that bug (it always used `continue`). All six SDKs were fixed to check
-//! every payment, and every logo-bearing field, as of the 2026-09 logo-URL validation hardening
-//! -- see `CLAUDE.md`.
+//! Historical note: several earlier SDK releases had a bug in the logo-domain-check loop where an
+//! early `return` (instead of `continue`) meant only the first payment in a GET response list was
+//! actually domain-checked; this crate never had that bug (it always used `continue`). Every SDK
+//! now checks every payment, and every logo-bearing field, as of the 2026-09 logo-URL validation
+//! hardening -- see `CLAUDE.md`.
 
 use std::time::Duration;
 
@@ -20,7 +19,7 @@ use crate::options::BrantaApiOptions;
 
 type HmacSha256 = Hmac<Sha256>;
 
-/// Matches .NET's `Uri.EscapeDataString`: percent-encode everything except unreserved characters
+/// Percent-encode everything except RFC 3986 unreserved characters
 /// (`ALPHA / DIGIT / "-" / "." / "_" / "~"`). Crucially this encodes `+`, `/`, and `=`, which
 /// routinely appear in base64 ciphertext lookup values -- `application/x-www-form-urlencoded`
 /// escaping (e.g. `url::form_urlencoded`) is the wrong tool here and would corrupt those values.
@@ -239,7 +238,7 @@ impl BrantaClientTrait for BrantaClient {
             Err(_) => return Err(BrantaError::Incomplete),
         };
         if !value.is_array() {
-            // Match JS/Kotlin/Swift: non-array 200 bodies decode as an empty list.
+            // Match the other SDKs: non-array 200 bodies decode as an empty list.
             return Ok(Vec::new());
         }
         let payments: Vec<Payment> = match serde_json::from_value(value) {
