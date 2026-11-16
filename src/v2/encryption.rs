@@ -1,8 +1,7 @@
 //! AES-256-GCM encrypt/decrypt.
 //!
 //! This module's wire format MUST match byte-for-byte across every Branta SDK — it is the
-//! foundation of cross-SDK zero-knowledge payment interop. Transcribed from
-//! `Branta/Classes/AesEncryption.cs`:
+//! foundation of cross-SDK zero-knowledge payment interop:
 //!
 //! - Key = `SHA-256(UTF-8 secret bytes)` — 32 bytes, used directly as the AES-256 key.
 //! - Nonce/IV = 12 bytes. Random (CSPRNG) when `deterministic_nonce` is false. When true: the
@@ -188,11 +187,10 @@ mod tests {
         assert!(matches!(result, Err(BrantaError::DecryptionFailed(_))));
     }
 
-    /// Proves real cross-SDK interop, not just internal self-consistency: this exact ciphertext
-    /// was produced by running `branta-python`'s `AesEncryption.encrypt("hello world",
-    /// "my-secret", deterministic_nonce=True)` directly.
+    /// Proves real cross-SDK interop, not just internal self-consistency: every Branta SDK
+    /// asserts this exact ciphertext for `encrypt("hello world", "my-secret", deterministic)`.
     #[test]
-    fn cross_sdk_fixed_vector_matches_python() {
+    fn cross_sdk_fixed_vector_matches_every_sdk() {
         let expected_ciphertext = "mPIKHc3ywVlsBHf3Lv2Rwpz2+fKE0kgUePq2m4fPIUidMuGEHVIB";
 
         let ciphertext = encrypt("hello world", "my-secret", true).unwrap();

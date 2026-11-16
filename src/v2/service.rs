@@ -917,7 +917,7 @@ mod tests {
 
     #[tokio::test]
     async fn combined_branta_qr_attacker_lightning_is_unknown() {
-        // Payment only has bitcoin — attacker bolt11 cannot bind (same as .NET/Go).
+        // Payment only has bitcoin — attacker bolt11 cannot bind (same as the other SDKs).
         let btc = encrypted_bitcoin(ADDRESS, SECRET, "zk-btc");
         let ciphertext = btc.value.clone();
         let svc = service(ScriptedClient::payments(vec![Payment {

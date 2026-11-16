@@ -1,4 +1,4 @@
-//! Live lookups against the same example QR codes as the Go SDK.
+//! Live lookups against the same example QR codes as the other SDKs.
 //!
 //! Skipped unless `BRANTA_RUN_INTEGRATION=1`.
 //! Write tests (polygon round-trips / combos) also need `BRANTA_API_KEY`.
