@@ -11,7 +11,7 @@ Rust 1.75 or higher, with [Tokio](https://tokio.rs).
 ## Install
 
 ```bash
-cargo add branta@4.4.0
+cargo add branta
 ```
 
 ## Send
