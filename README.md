@@ -43,7 +43,7 @@ match result.status {
 }
 ```
 
-On-chain Bitcoin needs a `bitcoin:` URI with `branta_id` and `branta_secret`. EVM USDT and USDC (Ethereum, Polygon, BNB Smart Chain, Base, Arbitrum) verify as an ERC-681 transfer, `ethereum:<contract>@<chainId>/transfer?address=<deposit>`, with `branta_id` and `branta_secret`. The chain id and token contract select one destination type, and `uint256` is not bound. The `pol:`, `eth:`, `bsc:`, `tron:`, `ton:`, and `sol:` schemes do not verify. bolt11, Ark, and silent payments resolve from the value. A bare address, including testnet `tb1` / `bcrt1` and bare `0x`, is `unknown`.
+Pass the scanned or pasted text to `verify`. A Bitcoin or EVM stablecoin lookup needs `branta_id` and `branta_secret` in the URI. bolt11, Ark, and silent payments resolve from the value. A bare address is `unknown`. The full rules are on [Status rules](https://developer.branta.pro/setup/send/status-rules), and supported chains and contracts are on [Destination types](https://developer.branta.pro/destination-types).
 
 A 404 is `unknown`. 5xx, 429, no network, a timeout, or a malformed GET body is `incomplete`.
 
@@ -78,7 +78,7 @@ A parent platform with one shared key sets `api_key` on the service and calls `s
 
 ## Destination types
 
-`add_payment` accepts `bitcoin_address`, `bolt11`, `ark_address`, `silent_payment`, `usdt_polygon`, `usdc_polygon`, `usdt_ethereum`, `usdc_ethereum`, `usdt_bsc`, `usdc_bsc`, `usdt_base`, `usdc_base`, `usdt_arbitrum`, `usdc_arbitrum`, `usdt_tron`, `usdt_ton`, `usdt_solana`, and `usdc_solana`. Bitcoin and stablecoin addresses use the returned secret. bolt11, Ark, and silent payments use a key derived from the lowercased value, so the same input always produces the same lookup token. Pass stablecoin types explicitly — a bare address is not auto-detected. `usdt_tron`, `usdt_ton`, `usdt_solana`, and `usdc_solana` encrypt on `add_payment` but have no verify URI yet. `usdc_ton` is not available yet.
+`add_payment` accepts the types on [Destination types](https://developer.branta.pro/destination-types), and [Encryption](https://developer.branta.pro/setup/receive/encryption) says which key each uses. `usdt_tron`, `usdt_ton`, `usdt_solana`, and `usdc_solana` also encrypt and post, but no URI verifies them.
 
 ## Development
 
