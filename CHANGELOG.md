@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [4.4.0] - 2026-11-15
+## [4.4.0] - 2026-11-17
 
 ### Added
 - `DestinationType::UsdtBase`, `UsdcBase`, `UsdtArbitrum`, and `UsdcArbitrum`. `add_payment` encrypts them with a random secret.
@@ -16,8 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking:** `pol:`, `eth:`, `bsc:`, `tron:`, `ton:`, and `sol:` URIs no longer verify. They are `unknown` and do not GET. Use the ERC-681 form for EVM stablecoins. `add_payment` still encrypts `usdt_tron`, `usdt_ton`, `usdt_solana`, and `usdc_solana`, but they have no verify URI yet.
 - A scan binds only the destination type named by its chain id and contract. It no longer binds any sibling in a family. A USDC scan against a USDT-only payment is `unknown`.
 - `ethereum://` authority forms, `/approve`, `/transferFrom`, path parameters, ENS names, a missing chain id, hex or signed chain ids, and a missing or malformed `address` are untyped and `unknown`. A chain id of more than 15 digits is rejected.
-- The query is read before any URL fragment. A `?` after a `#` belongs to the fragment, for `bitcoin:` and `ethereum:` URIs alike.
 - Matches `@branta-ops/branta` / Python / Dart / Swift / Kotlin / branta-go 4.4.0.
+
+### Fixed
+- A `#fragment` after the query is no longer read into the last query parameter or the last destination value. `bitcoin:…?branta_id=…&branta_secret=…#frag` used to read the secret as `…#frag`, fail to decrypt, and return `unknown`. An Ark or silent-payment value followed by `#frag` was read with the fragment attached, so its derived key did not match. Both now read the clean value.
+- A `?` after a `#` belongs to the fragment, not the query, for `bitcoin:` and `ethereum:` URIs alike.
 
 ## [4.3.0] - 2026-11-12
 
