@@ -1,44 +1,51 @@
 # Branta Rust SDK
 
-If you are implementing this SDK in a consumer project: product rules (send vs receive, `match` / `unknown` / `tampered`, parent platforms) live in the [developer docs](https://developer.branta.pro). `README.md` is the Rust crate — install, constructor, samples, and crypto.
+Rust SDK published on crates.io as `branta`. Consumers (wallets, platforms, parent platforms) call `BrantaService` to look up or post payments to Branta's V2 API. `README.md` is the install, constructor, samples, and crypto guide.
 
----
+## Behavior contract
 
-## Developer notes (SDK contributors)
+What `verify` returns and how ERC-681 is parsed: [Status rules](https://developer.branta.pro/setup/send/status-rules). Which rails encrypt with what key: [Encryption](https://developer.branta.pro/setup/receive/encryption). Send handling is on [Send](https://developer.branta.pro/setup/send), and the type list on [Destination types](https://developer.branta.pro/destination-types). Do not restate them here. Change the docs first, then the SDK.
 
-### Crate layout
+Invariants that break silently. Check them before you change `verify` or `addPayment`:
+
+- A raw on-chain address (including `tb1` / `bcrt1` / bare `0x`) is `unknown` and does not GET.
+- A swapped address is `tampered`. `unknown`, `tampered`, and `incomplete` are returned, never thrown.
+- The token is `matchedDestinations[].type`, never the URI scheme.
+- A logo-domain mismatch throws. Every other lookup failure is a status.
+- `addPayment` encrypts a copy and leaves the caller's `Payment` unchanged.
+- Keep parity with every 4.x Branta SDK. A public method added or changed here is mirrored in each of them.
+
+## Rust specifics
+
+- The contract's names are snake_case here: `add_payment`, `matched_destinations[].r#type`, `verify_url`. "Throws" means the call returns a `BrantaError`. `BrantaError::LogoUrlDomainMismatch(field)` is returned, and `verify` does not map it to a status.
+- `add_payment` returns `UnsupportedDestinationType` for a type it cannot encrypt.
+- `Destination.id` is sent as `zk_id`. Wire `zk` is always `true`. An unset TTL (`0`) is omitted.
+- `verify` parses first. Multi-value payloads go through `QrParser` whether they came from a scan or a paste.
+- `DestinationType` is only what `add_payment` accepts. It also includes `usdt_tron`, `usdt_ton`, `usdt_solana`, and `usdc_solana`. They can be posted but no URI verifies them, and they are not on the public Destination types page. There is no `usdc_ton`.
+- `BrantaApiOptions` is the constructor argument and the per-call override. A missing environment uses staging. `hmac_secret` is deprecated; a shared `api_key` plus `set_child_platform` is the parent-platform path.
+- Crypto output must match every sibling SDK byte for byte. The test vector is on the Encryption page. See `src/v2/encryption.rs`.
+- Default HTTP timeout is 30s. No retry logic.
+- Do not reintroduce `PrivacyMode`, `BrantaClientOptions`, `BrantaServerBaseUrl`, or `set_zk`.
+
+## Crate layout
+
 - `src/lib.rs` — public exports: `BrantaService`, `PaymentBuilder`, `BrantaApiOptions`, `BrantaEnvironment`, `DestinationType`, `VerifyStatus`, `VerifyResult`, `AddPaymentResult`, `Payment`, `Destination`, `Platform`, `BrantaError`.
 - `src/v2/` is private. `service.rs` orchestrates encrypt/decrypt. `client.rs` is the raw HTTP layer. Do not export `BrantaClient`, `QrParser`, AES types, `GuidSecretGenerator`, or the rail table and helpers (`EVM_TOKEN_RAILS`, `evm_token_type`, `is_secret_key_address_type`).
 - `examples/branta_example.rs` — runnable demo.
 - `tests/integration_test.rs` — live staging and production lookups, skipped unless `BRANTA_RUN_INTEGRATION=1`. Write tests (multi-rail round-trips / combos) also need `BRANTA_API_KEY`.
 - `tests/public_api_test.rs` — locks the consumer surface.
 
-### Build / test / release
+## Build / test / release
+
 - Build: `cargo build`
 - Test: `cargo test`
 - Live integration tests: `BRANTA_RUN_INTEGRATION=1 cargo test --test integration_test`
 - Live multi-rail write: `BRANTA_RUN_INTEGRATION=1 BRANTA_API_KEY=… cargo test --test integration_test staging_secret_key_round_trip`
 - Lint: `cargo clippy --all-targets -- -D warnings`
 - Format: `cargo fmt --check`
-- Release: bump `version` in `Cargo.toml`, add a `CHANGELOG.md` entry, `cargo publish`. Do not publish until asked.
+- Release: bump `version` in `Cargo.toml`, add a `CHANGELOG.md` entry, `cargo publish`, then tag the release commit `vX.Y.Z` and push the tag. Do not publish until asked.
 
-### Key behaviors to preserve
-- **Unencrypted destinations are not supported.** `verify` is the only lookup. A raw on-chain address (including testnet `tb1` / `bcrt1` / bare `0x`) is `unknown` and does not GET. `add_payment` encrypts every destination; types that cannot be encrypted return `UnsupportedDestinationType`.
-- **`DestinationType` is only what `add_payment` accepts:** bitcoin, bolt11, ark, silent payment, and the stablecoin rails (`usdt_polygon` … `usdc_solana`, including `usdt_base`, `usdc_base`, `usdt_arbitrum`, `usdc_arbitrum`). No `usdc_ton` yet. Pass stablecoin types explicitly. BIP21 extras this SDK cannot encrypt (`lno`, `pay`, non-bolt11 `lightning`) make `verify` return `unknown`.
-- **EVM USDT/USDC verify is ERC-681:** `ethereum:<contract>@<chainId>/transfer?address=<deposit>` plus `branta_id` / `branta_secret`. Chain id plus contract select one destination type (`EVM_TOKEN_RAILS`, crate-private). `uint256` is not bound. `pol:`, `eth:`, `bsc:`, `tron:`, `ton:`, and `sol:` do not verify and do not GET. `add_payment` still encrypts `usdt_tron`, `usdt_ton`, `usdt_solana`, and `usdc_solana`. A scan binds only the destination type its chain id and contract name. Token is on `matched_destinations[].r#type`.
-- **`verify` returns `VerifyResult`.** `match` includes `payments`, `matched_destinations`, and `verify_url`. `unknown`, `tampered`, and `incomplete` include only `verify_url`. Do not return an error for a swapped address. A 404 is `unknown`. 5xx, 429, no network, a timeout, or a malformed GET body are `incomplete`. `LogoUrlDomainMismatch` still returns an error. `branta_id` / `branta_secret` with no payable destination is `unknown` and does not GET. A bolt11 / Ark / silent-payment GET hit is `unknown` unless a destination of that type decrypts to the scanned value. A different plaintext is `tampered` for the whole call.
-- **`verify_url` is always returned.** Format: `{apiOrigin}/v2/verify/{lookup}` plus a URL fragment built from per-destination encryption keys on `match`.
-- **Encryption.** Bitcoin and stablecoin addresses use one UUID secret per `add_payment` call. bolt11, Ark, and silent payments use `SHA-256` of the lowercased value as uppercase hex. `add_payment` encrypts a copy. Description is folded into encrypted metadata and lifted back after decrypt. An unset TTL (`0`) is omitted. Wire `zk` is always `true`. Wire `zk_id` is `Destination.id`.
-- **`BrantaApiOptions` is the constructor argument and the per-call override.** A missing environment uses staging. `hmac_secret` is deprecated — shared `api_key` + `set_child_platform` is the parent-platform path. Do not reintroduce `PrivacyMode`, `BrantaClientOptions`, `BrantaServerBaseUrl`, or `set_zk`.
-- **`verify` parses first.** Multi-value payloads go through `QrParser` whether they came from a scan or a paste.
-- **Crypto wire format must byte-for-byte match every sibling SDK.** See `src/v2/encryption.rs`. The checked-in vector is `Encrypt("hello world", "my-secret", true) == mPIKHc3ywVlsBHf3Lv2Rwpz2+fKE0kgUePq2m4fPIUidMuGEHVIB`.
-- **Default HTTP timeout is 30s.** No retry logic.
+## Conventions
 
-### Logo-URL domain validation
-`BrantaClient::verify_logo_urls` checks every payment in a GET response and every logo-bearing field. A mismatch returns `BrantaError::LogoUrlDomainMismatch(field)`. `verify` does not map that error to a status.
-
-### Conventions
-- Public API is the crate root. `src/v2` and the rail table stays private.
 - `BrantaService::new` for production. `BrantaService::new_with_token` attaches `BRANTA_INTEGRATION_METRICS_TOKEN` for live tests. `with_deps` injects the HTTP client, AES, and secret generator.
 - `QrParser::new` is infallible. Unrecognized input is an untyped destination.
-- Keep parity with `@branta-ops/branta` / Swift / Kotlin / Branta.NET / branta-go 4.4.0.
