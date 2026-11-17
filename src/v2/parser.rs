@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use percent_encoding::percent_decode_str;
 
-use crate::enums::{secret_key_uri_family, DestinationType};
+use crate::enums::{evm_token_type, DestinationType};
 use crate::extensions::{derived_key_type, is_ark, is_bolt11, is_silent_payment};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -21,7 +21,9 @@ pub(crate) struct QrParser {
     pub on_chain_encryption_text: String,
     pub on_chain_encryption_secret: String,
     pub has_unverifiable_instruction: bool,
-    /// Destination types verify may bind for this QR's scheme (match-if-any).
+    /// Destination types this scan may decrypt.
+    /// ERC-681 sets one type from the chain id and token contract.
+    /// Bitcoin sets `BitcoinAddress`.
     pub expected_secret_key_types: Vec<DestinationType>,
 }
 
@@ -46,14 +48,21 @@ impl QrParser {
         };
 
         let scheme_lower = scheme.to_ascii_lowercase();
-        if let Some(family) = secret_key_uri_family(&scheme_lower) {
-            let dest_value = extract_destination(&text);
+        if scheme_lower == "ethereum" {
+            let Some((destination_type, address)) = parse_erc681(&text) else {
+                parser.destinations.push(QrDestination {
+                    value: text,
+                    r#type: None,
+                    secret_key: false,
+                });
+                return parser;
+            };
             parser.destinations.push(QrDestination {
-                value: dest_value,
-                r#type: None,
+                value: address,
+                r#type: Some(destination_type),
                 secret_key: true,
             });
-            parser.expected_secret_key_types = family.to_vec();
+            parser.expected_secret_key_types = vec![destination_type];
             let query = parse_query(&extract_query(&text));
             parser.on_chain_encryption_text = query.get("branta_id").cloned().unwrap_or_default();
             parser.on_chain_encryption_secret =
@@ -212,11 +221,66 @@ fn extract_destination(text: &str) -> String {
 }
 
 fn extract_query(text: &str) -> String {
+    // A "?" after the "#" belongs to the fragment, not the query.
+    let text = text.split('#').next().unwrap_or("");
     let after = text.split_once(':').map(|(_, after)| after).unwrap_or("");
     after
         .split_once('?')
         .map(|(_, query)| query.to_string())
         .unwrap_or_default()
+}
+
+/// Path of an `ethereum:` URI, without scheme, query, or fragment.
+/// One leading slash is dropped.
+fn erc681_path(text: &str) -> &str {
+    let after = text.split_once(':').map(|(_, after)| after).unwrap_or("");
+    let path = after.split(['?', '#']).next().unwrap_or("");
+    path.strip_prefix('/').unwrap_or(path)
+}
+
+/// `0x` or `0X` followed by 40 hex digits.
+fn is_evm_address(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    bytes.len() == 42
+        && bytes[0] == b'0'
+        && (bytes[1] == b'x' || bytes[1] == b'X')
+        && bytes[2..].iter().all(u8::is_ascii_hexdigit)
+}
+
+/// ERC-681 token transfer. The chain id and contract select one destination type.
+/// The deposit address is the `address` query param.
+fn parse_erc681(text: &str) -> Option<(DestinationType, String)> {
+    let path = erc681_path(text);
+    let (contract, rest) = path.split_once('@')?;
+    // The contract prefix is a lowercase `0x`, then 40 hex digits.
+    let contract_bytes = contract.as_bytes();
+    if contract_bytes.len() != 42
+        || !contract.starts_with("0x")
+        || !contract_bytes[2..].iter().all(u8::is_ascii_hexdigit)
+    {
+        return None;
+    }
+    let chain = rest.strip_suffix("/transfer")?;
+    if chain.is_empty() || !chain.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let digits = chain.trim_start_matches('0');
+    // No supported chain id has more than 15 digits.
+    if digits.len() > 15 {
+        return None;
+    }
+    let chain_id: u64 = if digits.is_empty() {
+        0
+    } else {
+        digits.parse().ok()?
+    };
+    let destination_type = evm_token_type(chain_id, contract)?;
+    let query = parse_query(&extract_query(text));
+    let address = query.get("address")?;
+    if !is_evm_address(address) {
+        return None;
+    }
+    Some((destination_type, address.clone()))
 }
 
 fn parse_query(query: &str) -> HashMap<String, String> {
@@ -278,60 +342,266 @@ mod tests {
         assert!(QrParser::new("lno1offer").destinations[0].r#type.is_none());
     }
 
+    const BASE_USDC: &str = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
+    const DEPOSIT: &str = "0x1111111111111111111111111111111111111111";
+
     #[test]
-    fn pol_uri_is_secret_key_without_token_type() {
-        let parser = QrParser::new(
-            "pol:0x278297528c32eCa01295B0d2135984d3442ec963?value=50&branta_id=enc&branta_secret=sec",
-        );
+    fn erc681_transfer_binds_the_deposit_and_one_token() {
+        let parser = QrParser::new(&format!(
+            "ethereum:{BASE_USDC}@8453/transfer?address={DEPOSIT}&uint256=1000000&branta_id=abc%2Bdef%3D&branta_secret=1234"
+        ));
+        assert_eq!(parser.destination(), Some(DEPOSIT));
+        assert_eq!(parser.destinations.len(), 1);
         assert_eq!(
-            parser.destination(),
-            Some("0x278297528c32eCa01295B0d2135984d3442ec963")
+            parser.destinations[0].r#type,
+            Some(DestinationType::UsdcBase)
         );
-        assert!(parser.destinations[0].r#type.is_none());
         assert!(parser.destinations[0].secret_key);
-        assert_eq!(parser.on_chain_encryption_text, "enc");
-        assert_eq!(parser.on_chain_encryption_secret, "sec");
         assert_eq!(
             parser.expected_secret_key_types,
-            vec![DestinationType::UsdtPolygon, DestinationType::UsdcPolygon]
+            vec![DestinationType::UsdcBase]
+        );
+        assert_eq!(parser.on_chain_encryption_text, "abc+def=");
+        assert_eq!(parser.on_chain_encryption_secret, "1234");
+    }
+
+    #[test]
+    fn every_rail_binds_the_deposit_and_one_type() {
+        for rail in crate::enums::EVM_TOKEN_RAILS {
+            let parser = QrParser::new(&format!(
+                "ethereum:{}@{}/transfer?address={DEPOSIT}&branta_id=a&branta_secret=b",
+                rail.contract, rail.chain_id
+            ));
+            let label = format!("{:?}", rail.destination_type);
+            assert_eq!(parser.destination(), Some(DEPOSIT), "{label}");
+            assert_eq!(
+                parser.destinations[0].r#type,
+                Some(rail.destination_type),
+                "{label}"
+            );
+            assert_eq!(
+                parser.expected_secret_key_types,
+                vec![rail.destination_type],
+                "{label}"
+            );
+        }
+    }
+
+    #[test]
+    fn erc681_contract_matches_case_insensitively() {
+        let parser = QrParser::new(&format!(
+            "ethereum:{}@8453/transfer?address={DEPOSIT}",
+            BASE_USDC.to_ascii_lowercase()
+        ));
+        assert_eq!(
+            parser.destinations[0].r#type,
+            Some(DestinationType::UsdcBase)
         );
     }
 
     #[test]
-    fn chain_schemes_map_to_families() {
-        let cases: [(&str, &str, Vec<DestinationType>); 5] = [
-            (
-                "eth",
-                "0xBF5550253939187432Ef4dccE8089765d3DCb47f",
-                vec![DestinationType::UsdtEthereum, DestinationType::UsdcEthereum],
-            ),
-            (
-                "bsc",
-                "0xBF5550253939187432Ef4dccE8089765d3DCb47f",
-                vec![DestinationType::UsdtBsc, DestinationType::UsdcBsc],
-            ),
-            (
-                "tron",
-                "T9yD14Nj9j7xAB4dbGeiX9h8unkKHxuWwb",
-                vec![DestinationType::UsdtTron],
-            ),
-            ("ton", "UQBexample", vec![DestinationType::UsdtTon]),
-            (
-                "sol",
-                "7EqQdEULxWcraVx3mXKFjc84LhCkMGZCkRuDofycyinf",
-                vec![DestinationType::UsdtSolana, DestinationType::UsdcSolana],
-            ),
-        ];
-        for (scheme, address, expected) in cases {
+    fn erc681_uint256_is_not_part_of_the_binding() {
+        for amount in ["1", "50000000", "999999999999999999999"] {
             let parser = QrParser::new(&format!(
-                "{scheme}:{address}?value=1&branta_id=enc&branta_secret=sec"
+                "ethereum:{BASE_USDC}@8453/transfer?address={DEPOSIT}&uint256={amount}"
             ));
-            assert_eq!(parser.destination(), Some(address), "{scheme}");
+            assert_eq!(parser.destination(), Some(DEPOSIT), "{amount}");
+            assert_eq!(
+                parser.destinations[0].r#type,
+                Some(DestinationType::UsdcBase),
+                "{amount}"
+            );
+        }
+    }
+
+    #[test]
+    fn erc681_tolerates_one_leading_slash_and_an_upper_case_scheme() {
+        for text in [
+            format!("ethereum:/{BASE_USDC}@8453/transfer?address={DEPOSIT}"),
+            format!("ETHEREUM:{BASE_USDC}@8453/transfer?address={DEPOSIT}"),
+        ] {
+            assert_eq!(
+                QrParser::new(&text).destinations[0].r#type,
+                Some(DestinationType::UsdcBase),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
+    fn erc681_accepts_an_upper_case_0x_deposit_prefix() {
+        let parser = QrParser::new(&format!(
+            "ethereum:{BASE_USDC}@8453/transfer?address=0X{}",
+            &DEPOSIT[2..]
+        ));
+        assert_eq!(
+            parser.destinations[0].r#type,
+            Some(DestinationType::UsdcBase)
+        );
+    }
+
+    #[test]
+    fn erc681_first_address_param_wins() {
+        let parser = QrParser::new(&format!(
+            "ethereum:{BASE_USDC}@8453/transfer?address={DEPOSIT}&address=0x{}",
+            "f".repeat(40)
+        ));
+        assert_eq!(parser.destination(), Some(DEPOSIT));
+    }
+
+    #[test]
+    fn percent_encoded_ampersand_stays_inside_branta_id() {
+        let parser = QrParser::new(&format!(
+            "ethereum:{BASE_USDC}@8453/transfer?address={DEPOSIT}&branta_id=a%26b&branta_secret=s"
+        ));
+        assert_eq!(parser.on_chain_encryption_text, "a&b");
+        assert_eq!(parser.on_chain_encryption_secret, "s");
+    }
+
+    #[test]
+    fn erc681_params_in_the_fragment_are_not_read() {
+        let parser = QrParser::new(&format!(
+            "ethereum:{BASE_USDC}@8453/transfer?address={DEPOSIT}#&branta_id=abc&branta_secret=1234"
+        ));
+        assert_eq!(
+            parser.destinations[0].r#type,
+            Some(DestinationType::UsdcBase)
+        );
+        assert_eq!(parser.on_chain_encryption_text, "");
+    }
+
+    #[test]
+    fn a_query_after_a_fragment_is_not_read() {
+        let parser = QrParser::new(&format!(
+            "ethereum:{BASE_USDC}@8453/transfer#x?address={DEPOSIT}&branta_id=a&branta_secret=b"
+        ));
+        assert!(parser.destinations[0].r#type.is_none());
+        assert_eq!(parser.on_chain_encryption_text, "");
+        assert!(parser.expected_secret_key_types.is_empty());
+    }
+
+    #[test]
+    fn a_fragment_after_the_query_is_dropped() {
+        let parser = QrParser::new(&format!(
+            "ethereum:{BASE_USDC}@8453/transfer?address={DEPOSIT}&branta_id=a&branta_secret=b#address=0x2"
+        ));
+        assert_eq!(parser.destination(), Some(DEPOSIT));
+        assert_eq!(parser.on_chain_encryption_text, "a");
+        assert_eq!(parser.on_chain_encryption_secret, "b");
+    }
+
+    #[test]
+    fn bitcoin_query_after_a_fragment_is_not_read() {
+        let parser = QrParser::new("bitcoin:bc1qtest#x?branta_id=a&branta_secret=b");
+        assert_eq!(parser.on_chain_encryption_text, "");
+        let ok = QrParser::new("bitcoin:bc1qtest?branta_id=a&branta_secret=b#frag");
+        assert_eq!(ok.on_chain_encryption_secret, "b");
+    }
+
+    #[test]
+    fn erc681_chain_id_beyond_15_digits_is_untyped() {
+        let parser = QrParser::new(&format!(
+            "ethereum:{BASE_USDC}@{}/transfer?address={DEPOSIT}",
+            "9".repeat(5000)
+        ));
+        assert!(parser.destinations[0].r#type.is_none());
+    }
+
+    #[test]
+    fn erc681_leading_zero_chain_id_still_selects_the_rail() {
+        let parser = QrParser::new(&format!(
+            "ethereum:{BASE_USDC}@{}8453/transfer?address={DEPOSIT}",
+            "0".repeat(4500)
+        ));
+        assert_eq!(
+            parser.destinations[0].r#type,
+            Some(DestinationType::UsdcBase)
+        );
+    }
+
+    #[test]
+    fn incomplete_erc681_forms_do_not_bind() {
+        let tail = format!("?address={DEPOSIT}&branta_id=abc&branta_secret=1234");
+        let forms = [
+            // No chain id.
+            format!("ethereum:{BASE_USDC}/transfer{tail}"),
+            // Payment-request prefix and ENS-style forms.
+            format!("ethereum:pay-{BASE_USDC}@8453/transfer{tail}"),
+            format!("ethereum:vitalik.eth@8453/transfer{tail}"),
+            // // makes the contract an authority, not a path.
+            format!("ethereum://{BASE_USDC}@8453/transfer{tail}"),
+            // Only transfer is a payment. approve and transferFrom are not.
+            format!("ethereum:{BASE_USDC}@8453/approve{tail}"),
+            format!("ethereum:{BASE_USDC}@8453/transferFrom{tail}"),
+            // Path parameters after the function name.
+            format!("ethereum:{BASE_USDC}@8453/transfer;x=1{tail}"),
+            // Chain id forms that are not plain digits.
+            format!("ethereum:{BASE_USDC}@0x2105/transfer{tail}"),
+            format!("ethereum:{BASE_USDC}@-8453/transfer{tail}"),
+            format!("ethereum:{BASE_USDC}@+8453/transfer{tail}"),
+            format!("ethereum:{BASE_USDC}@/transfer{tail}"),
+            // No address, a truncated address, or an ENS recipient.
+            format!("ethereum:{BASE_USDC}@8453/transfer?branta_id=abc&branta_secret=1234"),
+            format!("ethereum:{BASE_USDC}@8453/transfer?address=0x1234&branta_id=abc&branta_secret=1234"),
+            format!("ethereum:{BASE_USDC}@8453/transfer?address=vitalik.eth&branta_id=abc&branta_secret=1234"),
+        ];
+        for text in forms {
+            let parser = QrParser::new(&text);
+            assert!(parser.destinations[0].r#type.is_none(), "{text}");
+            assert!(parser.expected_secret_key_types.is_empty(), "{text}");
+            assert_eq!(parser.on_chain_encryption_text, "", "{text}");
+            assert!(!parser.destinations[0].secret_key, "{text}");
+        }
+    }
+
+    #[test]
+    fn unknown_contract_and_wrong_chain_do_not_bind() {
+        for text in [
+            format!(
+                "ethereum:0x{}@8453/transfer?address={DEPOSIT}&branta_id=a&branta_secret=b",
+                "2".repeat(40)
+            ),
+            format!(
+                "ethereum:{BASE_USDC}@1/transfer?address={DEPOSIT}&branta_id=a&branta_secret=b"
+            ),
+        ] {
+            let parser = QrParser::new(&text);
+            assert!(parser.destinations[0].r#type.is_none(), "{text}");
+            assert_eq!(parser.on_chain_encryption_text, "", "{text}");
+        }
+    }
+
+    #[test]
+    fn unparseable_or_non_ascii_input_is_an_untyped_destination() {
+        let parser = QrParser::new("ethereum://[bad/transfer");
+        assert_eq!(parser.destination(), Some("ethereum://[bad/transfer"));
+        assert!(parser.destinations[0].r#type.is_none());
+        // Multi-byte text around the separators must not panic on a slice.
+        for text in [
+            "ethereum:é@8453/transfer?address=é",
+            "ethereum:0xé@é/transfer#é?é",
+            "ethereum:\u{1F600}@\u{1F600}/transfer",
+        ] {
+            assert!(
+                QrParser::new(text).destinations[0].r#type.is_none(),
+                "{text}"
+            );
+        }
+        assert_eq!(QrParser::new("bitcoin://[bad").on_chain_encryption_text, "");
+    }
+
+    #[test]
+    fn removed_chain_schemes_do_not_bind() {
+        for scheme in ["pol", "eth", "bsc", "tron", "ton", "sol"] {
+            let text = format!(
+                "{scheme}:0x278297528c32eCa01295B0d2135984d3442ec963?value=50&branta_id=abc&branta_secret=1234"
+            );
+            let parser = QrParser::new(&text);
+            assert_eq!(parser.destination(), Some(text.as_str()), "{scheme}");
             assert!(parser.destinations[0].r#type.is_none(), "{scheme}");
-            assert!(parser.destinations[0].secret_key, "{scheme}");
-            assert_eq!(parser.on_chain_encryption_text, "enc");
-            assert_eq!(parser.on_chain_encryption_secret, "sec");
-            assert_eq!(parser.expected_secret_key_types, expected, "{scheme}");
+            assert!(!parser.destinations[0].secret_key, "{scheme}");
+            assert!(parser.expected_secret_key_types.is_empty(), "{scheme}");
+            assert!(!parser.is_on_chain_zk(), "{scheme}");
         }
     }
 

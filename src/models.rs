@@ -158,7 +158,7 @@ pub struct VerifyResult {
     pub status: VerifyStatus,
     pub payments: Vec<Payment>,
     pub verify_url: String,
-    /// Decrypted rails that bound the scan on `Match` (token for `pol:` is on `type`).
+    /// Decrypted rails that bound the scan on `Match` (the token is on `type`).
     pub matched_destinations: Vec<Destination>,
 }
 

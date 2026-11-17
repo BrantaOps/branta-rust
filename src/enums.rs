@@ -44,56 +44,97 @@ pub enum DestinationType {
     UsdtTon,
     UsdtSolana,
     UsdcSolana,
+    UsdtBase,
+    UsdcBase,
+    UsdtArbitrum,
+    UsdcArbitrum,
 }
 
-/// Polygon EVM secret-key rails. A `pol:` URI maps to this family for verify
-/// (match-if-any). Token is still the destination type on the payment.
-pub(crate) const POLYGON_EVM_DESTINATION_TYPES: &[DestinationType] =
-    &[DestinationType::UsdtPolygon, DestinationType::UsdcPolygon];
+/// An ERC-681 `ethereum:<contract>@<chainId>/transfer` rail.
+pub(crate) struct EvmTokenRail {
+    pub chain_id: u64,
+    /// Lowercase, so lookup is case-insensitive.
+    pub contract: &'static str,
+    pub destination_type: DestinationType,
+}
 
-/// Ethereum secret-key rails (`eth:` URI).
-pub(crate) const ETHEREUM_EVM_DESTINATION_TYPES: &[DestinationType] =
-    &[DestinationType::UsdtEthereum, DestinationType::UsdcEthereum];
-
-/// BSC secret-key rails (`bsc:` URI).
-pub(crate) const BSC_EVM_DESTINATION_TYPES: &[DestinationType] =
-    &[DestinationType::UsdtBsc, DestinationType::UsdcBsc];
-
-/// Tron secret-key rails (`tron:` URI).
-pub(crate) const TRON_DESTINATION_TYPES: &[DestinationType] = &[DestinationType::UsdtTron];
-
-/// TON secret-key rails (`ton:` URI).
-pub(crate) const TON_DESTINATION_TYPES: &[DestinationType] = &[DestinationType::UsdtTon];
-
-/// Solana secret-key rails (`sol:` URI).
-pub(crate) const SOLANA_DESTINATION_TYPES: &[DestinationType] =
-    &[DestinationType::UsdtSolana, DestinationType::UsdcSolana];
-
-/// URI scheme → secret-key destination family for verify (match-if-any).
-/// Token is the destination type on the payment, not the scheme.
-pub(crate) const SECRET_KEY_URI_FAMILIES: &[(&str, &[DestinationType])] = &[
-    ("pol", POLYGON_EVM_DESTINATION_TYPES),
-    ("eth", ETHEREUM_EVM_DESTINATION_TYPES),
-    ("bsc", BSC_EVM_DESTINATION_TYPES),
-    ("tron", TRON_DESTINATION_TYPES),
-    ("ton", TON_DESTINATION_TYPES),
-    ("sol", SOLANA_DESTINATION_TYPES),
+/// Chain id plus token contract select one destination type.
+pub(crate) const EVM_TOKEN_RAILS: &[EvmTokenRail] = &[
+    EvmTokenRail {
+        chain_id: 1,
+        contract: "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48",
+        destination_type: DestinationType::UsdcEthereum,
+    },
+    EvmTokenRail {
+        chain_id: 1,
+        contract: "0xdac17f958d2ee523a2206206994597c13d831ec7",
+        destination_type: DestinationType::UsdtEthereum,
+    },
+    EvmTokenRail {
+        chain_id: 137,
+        contract: "0x3c499c542cef5e3811e1192ce70d8cc03d5c3359",
+        destination_type: DestinationType::UsdcPolygon,
+    },
+    EvmTokenRail {
+        chain_id: 137,
+        contract: "0xc2132d05d31c914a87c6611c10748aeb04b58e8f",
+        destination_type: DestinationType::UsdtPolygon,
+    },
+    EvmTokenRail {
+        chain_id: 8453,
+        contract: "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+        destination_type: DestinationType::UsdcBase,
+    },
+    EvmTokenRail {
+        chain_id: 8453,
+        contract: "0xfde4c96c8593536e31f229ea8f37b2ada2699bb2",
+        destination_type: DestinationType::UsdtBase,
+    },
+    EvmTokenRail {
+        chain_id: 42161,
+        contract: "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+        destination_type: DestinationType::UsdcArbitrum,
+    },
+    EvmTokenRail {
+        chain_id: 42161,
+        contract: "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
+        destination_type: DestinationType::UsdtArbitrum,
+    },
+    EvmTokenRail {
+        chain_id: 56,
+        contract: "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d",
+        destination_type: DestinationType::UsdcBsc,
+    },
+    EvmTokenRail {
+        chain_id: 56,
+        contract: "0x55d398326f99059ff775485246999027b3197955",
+        destination_type: DestinationType::UsdtBsc,
+    },
 ];
 
-/// The secret-key family for a lowercase URI scheme, if it names one.
-pub(crate) fn secret_key_uri_family(scheme: &str) -> Option<&'static [DestinationType]> {
-    SECRET_KEY_URI_FAMILIES
+/// The destination type for a chain id and token contract, if they name a rail.
+pub(crate) fn evm_token_type(chain_id: u64, contract: &str) -> Option<DestinationType> {
+    let needle = contract.to_ascii_lowercase();
+    EVM_TOKEN_RAILS
         .iter()
-        .find(|(name, _)| *name == scheme)
-        .map(|(_, family)| *family)
+        .find(|rail| rail.chain_id == chain_id && rail.contract == needle)
+        .map(|rail| rail.destination_type)
 }
 
-/// Address rails encrypted with a random `branta_secret` (not a derived key).
+/// Address rails `add_payment` encrypts with one UUID secret.
+/// Tron, TON, and Solana are included because `add_payment` still encrypts them.
+/// They have no verify URI.
 pub(crate) fn is_secret_key_address_type(r#type: DestinationType) -> bool {
-    r#type == DestinationType::BitcoinAddress
-        || SECRET_KEY_URI_FAMILIES
-            .iter()
-            .any(|(_, family)| family.contains(&r#type))
+    matches!(
+        r#type,
+        DestinationType::BitcoinAddress
+            | DestinationType::UsdtTron
+            | DestinationType::UsdtTon
+            | DestinationType::UsdtSolana
+            | DestinationType::UsdcSolana
+    ) || EVM_TOKEN_RAILS
+        .iter()
+        .any(|rail| rail.destination_type == r#type)
 }
 
 /// The result of [`crate::BrantaService::verify`].
@@ -150,8 +191,12 @@ mod tests {
             (DestinationType::UsdtTon, "\"usdt_ton\""),
             (DestinationType::UsdtSolana, "\"usdt_solana\""),
             (DestinationType::UsdcSolana, "\"usdc_solana\""),
+            (DestinationType::UsdtBase, "\"usdt_base\""),
+            (DestinationType::UsdcBase, "\"usdc_base\""),
+            (DestinationType::UsdtArbitrum, "\"usdt_arbitrum\""),
+            (DestinationType::UsdcArbitrum, "\"usdc_arbitrum\""),
         ];
-        assert_eq!(cases.len(), 14);
+        assert_eq!(cases.len(), 18);
         for (variant, expected) in cases {
             let json = serde_json::to_string(&variant).unwrap();
             assert_eq!(json, expected);
@@ -162,30 +207,65 @@ mod tests {
     }
 
     #[test]
-    fn secret_key_uri_families_cover_all_stable_rails() {
-        let schemes: Vec<&str> = SECRET_KEY_URI_FAMILIES.iter().map(|(n, _)| *n).collect();
-        assert_eq!(schemes, ["pol", "eth", "bsc", "tron", "ton", "sol"]);
+    fn evm_token_rails_cover_five_networks_with_one_type_each() {
+        let chains: std::collections::BTreeSet<u64> =
+            EVM_TOKEN_RAILS.iter().map(|rail| rail.chain_id).collect();
         assert_eq!(
-            secret_key_uri_family("eth"),
-            Some(&[DestinationType::UsdtEthereum, DestinationType::UsdcEthereum][..])
+            chains.into_iter().collect::<Vec<_>>(),
+            [1, 56, 137, 8453, 42161]
         );
-        assert_eq!(
-            secret_key_uri_family("tron"),
-            Some(&[DestinationType::UsdtTron][..])
-        );
-        assert_eq!(
-            secret_key_uri_family("sol"),
-            Some(&[DestinationType::UsdtSolana, DestinationType::UsdcSolana][..])
-        );
-        assert_eq!(secret_key_uri_family("bitcoin"), None);
-        assert!(is_secret_key_address_type(DestinationType::BitcoinAddress));
-        assert!(is_secret_key_address_type(DestinationType::UsdtPolygon));
-        assert!(!is_secret_key_address_type(DestinationType::Bolt11));
-        for (_, family) in SECRET_KEY_URI_FAMILIES {
-            for t in *family {
-                assert!(is_secret_key_address_type(*t));
-            }
+        assert_eq!(EVM_TOKEN_RAILS.len(), 10);
+        let types: std::collections::HashSet<DestinationType> = EVM_TOKEN_RAILS
+            .iter()
+            .map(|rail| rail.destination_type)
+            .collect();
+        assert_eq!(types.len(), 10);
+        for rail in EVM_TOKEN_RAILS {
+            assert_eq!(rail.contract, rail.contract.to_ascii_lowercase());
         }
+    }
+
+    #[test]
+    fn evm_token_type_selects_by_chain_id_and_contract() {
+        let base_usdc = "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913";
+        assert_eq!(
+            evm_token_type(8453, base_usdc),
+            Some(DestinationType::UsdcBase)
+        );
+        assert_eq!(
+            evm_token_type(8453, &base_usdc.to_ascii_lowercase()),
+            Some(DestinationType::UsdcBase)
+        );
+        // Same contract on the wrong chain is not a rail.
+        assert_eq!(evm_token_type(1, base_usdc), None);
+        // Polygon bridged USDC.e is not the native USDC contract.
+        assert_eq!(
+            evm_token_type(137, "0x2791bca1f2de4661ed88a30c99a7a9449aa84174"),
+            None
+        );
+        // Arbitrum Nova is not Arbitrum One.
+        assert_eq!(
+            evm_token_type(42170, "0xaf88d065e77c8cc2239327c5edb3a432268e5831"),
+            None
+        );
+    }
+
+    #[test]
+    fn secret_key_helper_covers_bitcoin_evm_rails_and_post_only_types() {
+        assert!(is_secret_key_address_type(DestinationType::BitcoinAddress));
+        for rail in EVM_TOKEN_RAILS {
+            assert!(is_secret_key_address_type(rail.destination_type));
+        }
+        // Tron, TON, and Solana still encrypt on add_payment. They have no verify URI.
+        for post_only in [
+            DestinationType::UsdtTron,
+            DestinationType::UsdtTon,
+            DestinationType::UsdtSolana,
+            DestinationType::UsdcSolana,
+        ] {
+            assert!(is_secret_key_address_type(post_only), "{post_only:?}");
+        }
+        assert!(!is_secret_key_address_type(DestinationType::Bolt11));
         assert!(!is_secret_key_address_type(DestinationType::ArkAddress));
         assert!(!is_secret_key_address_type(DestinationType::SilentPayment));
     }
