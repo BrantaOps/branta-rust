@@ -74,8 +74,6 @@ let added = service.add_payment(&payment, None).await?;
 
 Store `added.secret` with the invoice. Put `branta_id` and `branta_secret` on the invoice QR (`bitcoin:…` or an ERC-681 `ethereum:…/transfer` URI). `added.verify_url` is the link for the wallet.
 
-A parent platform with one shared key sets `api_key` on the service and calls `set_child_platform` for each payment. That is the path for new parent platforms. The deprecated per-client HMAC path is in the developer docs.
-
 ## Destination types
 
 `add_payment` accepts the types on [Destination types](https://developer.branta.pro/destination-types), and [Encryption](https://developer.branta.pro/setup/receive/encryption) says which key each uses. `usdt_tron`, `usdt_ton`, `usdt_solana`, and `usdc_solana` also encrypt and post, but no URI verifies them.
