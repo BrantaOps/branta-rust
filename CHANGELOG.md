@@ -16,7 +16,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking:** `pol:`, `eth:`, `bsc:`, `tron:`, `ton:`, and `sol:` URIs no longer verify. They are `unknown` and do not GET. Use the ERC-681 form for EVM stablecoins. `add_payment` still encrypts `usdt_tron`, `usdt_ton`, `usdt_solana`, and `usdc_solana`, but they have no verify URI yet.
 - A scan binds only the destination type named by its chain id and contract. It no longer binds any sibling in a family. A USDC scan against a USDT-only payment is `unknown`.
 - `ethereum://` authority forms, `/approve`, `/transferFrom`, path parameters, ENS names, a missing chain id, hex or signed chain ids, and a missing or malformed `address` are untyped and `unknown`. A chain id of more than 15 digits is rejected.
-- Matches `@branta-ops/branta` / Python / Dart / Swift / Kotlin / branta-go 4.4.0.
 
 ### Fixed
 - A `#fragment` after the query is no longer read into the last query parameter or the last destination value. `bitcoin:…?branta_id=…&branta_secret=…#frag` used to read the secret as `…#frag`, fail to decrypt, and return `unknown`. An Ark or silent-payment value followed by `#frag` was read with the fragment attached, so its derived key did not match. Both now read the clean value.
@@ -30,13 +29,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `tests/public_api_test.rs` locks the consumer surface.
 
 ### Changed
-- **Breaking for 4.2.0 callers:** rail-family lists / `SECRET_KEY_URI_FAMILIES` / `is_secret_key_address_type` / `is_polygon_evm_destination_type` are crate-private (match JS/Python/Dart/Swift/Kotlin/dotnet/Go consumer surface).
+- **Breaking for 4.2.0 callers:** rail-family lists / `SECRET_KEY_URI_FAMILIES` / `is_secret_key_address_type` / `is_polygon_evm_destination_type` are crate-private.
 - Malformed GET JSON / bad payment rows map to `incomplete` (not a thrown decode error). Non-array 200 bodies decode as an empty list.
 - Default HTTP client uses a 30s timeout so hung networks become `incomplete` on verify.
 - `hmac_secret` on `BrantaApiOptions` is deprecated; prefer a shared `api_key` with `PaymentBuilder::set_child_platform`.
 
 ### Notes
-- `usdc_ton` is deferred until a platform names a concrete TON USDC jetton. Matches `@branta-ops/branta` / Python / Dart / Swift / Kotlin / Branta.NET / branta-go 4.3.0.
+- `usdc_ton` is deferred until a platform names a concrete TON USDC jetton.
 
 ## [4.2.0] - 2026-11-10
 
@@ -50,7 +49,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `verify` of a `pol:` URI binds any Polygon EVM family member whose decrypted address matches (match-if-any).
 - `pol:` parsing does not stamp a token `DestinationType` on the QR address. The scheme maps to the Polygon EVM family for verify; the token still comes from the matched payment destination.
 - `verify` swap-checks only the secret-key rail family that matches the QR scheme, so a payment with both bitcoin and `usdt_polygon` no longer returns `tampered` for a valid single-rail QR.
-- This release matches `@branta-ops/branta` / Branta.NET / branta-go / branta-swift / branta-kotlin / branta-python 4.2.0.
 
 ## [4.0.0] - 2026-11-02
 
