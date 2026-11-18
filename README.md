@@ -4,10 +4,6 @@ Rust SDK for the [Branta](https://developer.branta.pro) V2 API.
 
 Use `verify` on send and `add_payment` on receive. Status handling and parent platforms are in the [developer docs](https://developer.branta.pro).
 
-## Requirements
-
-Rust 1.75 or higher, with [Tokio](https://tokio.rs).
-
 ## Install
 
 ```bash
@@ -68,18 +64,8 @@ let payment = PaymentBuilder::new()
 let added = service.add_payment(&payment, None).await?;
 ```
 
-`add_payment` encrypts a copy. The `Payment` you pass in stays plaintext, so a failed post can be retried.
-
 Store `added.secret` with the invoice. Put `branta_id` and `branta_secret` on the invoice QR (`bitcoin:…` or an ERC-681 `ethereum:…/transfer` URI). `added.verify_url` is the link for the wallet.
 
 ## Destination types
 
 `add_payment` accepts the types on [Destination types](https://developer.branta.pro/destination-types), and [Encryption](https://developer.branta.pro/setup/receive/encryption) says which key each uses. `usdt_tron`, `usdt_ton`, `usdt_solana`, and `usdc_solana` also encrypt and post, but no URI verifies them.
-
-## Development
-
-```bash
-cargo test
-cargo clippy --all-targets -- -D warnings
-BRANTA_RUN_INTEGRATION=1 BRANTA_API_KEY=… cargo test --test integration_test staging_
-```
