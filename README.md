@@ -2,7 +2,7 @@
 
 Rust SDK for the [Branta](https://developer.branta.pro) V2 API.
 
-Use `verify` on send and `add_payment` on receive. Status handling and parent platforms are in the [developer docs](https://developer.branta.pro).
+Status handling and parent platforms are in the [developer docs](https://developer.branta.pro).
 
 ## Install
 
@@ -16,7 +16,7 @@ cargo add branta
 use branta::{BrantaApiOptions, BrantaEnvironment, BrantaService};
 
 let service = BrantaService::new(
-    BrantaApiOptions::new(BrantaEnvironment::Production), // Staging everywhere else
+    BrantaApiOptions::new(BrantaEnvironment::Production),
 );
 
 let result = service.verify(input, None).await?; // scanned QR or pasted text
@@ -39,7 +39,7 @@ match result.status {
 }
 ```
 
-Pass the scanned or pasted text to `verify`. A Bitcoin or EVM stablecoin lookup needs `branta_id` and `branta_secret` in the URI. bolt11, Ark, and silent payments resolve from the value. A bare address is `unknown`. The full rules are on [Status rules](https://developer.branta.pro/setup/send/status-rules), and supported chains and contracts are on [Destination types](https://developer.branta.pro/destination-types).
+Rules for each status: [Status rules](https://developer.branta.pro/setup/send/status-rules). Supported types: [Destination types](https://developer.branta.pro/destination-types).
 
 ## Receive
 
@@ -55,17 +55,12 @@ let service = BrantaService::new(options);
 let payment = PaymentBuilder::new()
     .set_description("Invoice #12345")
     .add_destination("bc1q…", Some(DestinationType::BitcoinAddress))
-    // Stablecoins: pass the rail type explicitly — bare addresses are not auto-detected.
-    // .add_destination("0x…", Some(DestinationType::UsdtBase))
-    // .add_destination("0x…", Some(DestinationType::UsdcArbitrum))
     .set_ttl(600) // seconds
     .build();
 
 let added = service.add_payment(&payment, None).await?;
+// Store added.secret with the invoice. Put branta_id and branta_secret on the QR.
+// Link the sender to added.verify_url.
 ```
 
-Store `added.secret` with the invoice. Put `branta_id` and `branta_secret` on the invoice QR (`bitcoin:…` or an ERC-681 `ethereum:…/transfer` URI). `added.verify_url` is the link for the wallet.
-
-## Destination types
-
-`add_payment` accepts the types on [Destination types](https://developer.branta.pro/destination-types), and [Encryption](https://developer.branta.pro/setup/receive/encryption) says which key each uses. `usdt_tron`, `usdt_ton`, `usdt_solana`, and `usdc_solana` also encrypt and post, but no URI verifies them.
+`add_payment` accepts the types on [Destination types](https://developer.branta.pro/destination-types). Pass the type for stablecoins. A bare address is not auto-detected. `usdt_tron`, `usdt_ton`, `usdt_solana`, and `usdc_solana` also encrypt and post, but no URI verifies them.
