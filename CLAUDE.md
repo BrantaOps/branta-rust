@@ -1,6 +1,6 @@
 # Branta Rust SDK
 
-Rust SDK published on crates.io as `branta`. Consumers (wallets, platforms, parent platforms) call `BrantaService` to look up or post payments to Branta's V2 API. `README.md` is the install, constructor, samples, and crypto guide.
+Rust SDK published on crates.io as `branta`. Consumers (wallets, platforms, parent platforms) call `BrantaService` to look up or post payments to Branta. `README.md` is the install, constructor, samples, and crypto guide.
 
 ## Behavior contract
 

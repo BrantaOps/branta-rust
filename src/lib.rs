@@ -1,4 +1,4 @@
-//! Rust SDK for the Branta V2 API.
+//! Rust SDK for Branta.
 //!
 //! Use [`BrantaService::verify`] on send and [`BrantaService::add_payment`] on receive.
 //! Status handling and parent platforms are in the [developer docs](https://developer.branta.pro).

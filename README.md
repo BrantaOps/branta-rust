@@ -1,6 +1,6 @@
 # Branta Rust SDK
 
-Rust SDK for the [Branta](https://developer.branta.pro) V2 API.
+Rust SDK for [Branta](https://developer.branta.pro).
 
 Status handling and parent platforms are in the [developer docs](https://developer.branta.pro).
 
