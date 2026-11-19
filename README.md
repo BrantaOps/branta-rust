@@ -64,3 +64,14 @@ let added = service.add_payment(&payment, None).await?;
 ```
 
 `add_payment` accepts the types on [Destination types](https://developer.branta.pro/destination-types). Pass the type for stablecoins. A bare address is not auto-detected. `usdt_tron`, `usdt_ton`, `usdt_solana`, and `usdc_solana` also encrypt and post, but no URI verifies them.
+
+### HMAC signing
+
+If Branta enabled Require HMAC on your platform, create a Secret in Guardrail and set it as `hmac_secret`. The service signs each `add_payment`. Keep it server-side. See [HMAC signing](https://developer.branta.pro/setup/receive/hmac-signing).
+
+```rust
+let mut options = BrantaApiOptions::new(BrantaEnvironment::Production);
+options.api_key = Some("<api-key>".into());
+options.hmac_secret = Some("<secret>".into());
+let service = BrantaService::new(options);
+```
