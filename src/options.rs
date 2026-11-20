@@ -9,23 +9,18 @@ use crate::enums::BrantaEnvironment;
 pub struct BrantaApiOptions {
     pub environment: Option<BrantaEnvironment>,
     pub api_key: Option<String>,
-    /// Deprecated: prefer a shared `api_key` with [`crate::PaymentBuilder::set_child_platform`].
-    #[deprecated(
-        since = "4.3.0",
-        note = "prefer a shared api_key with PaymentBuilder::set_child_platform"
-    )]
+    /// Secret from the Secrets tab in Guardrail. Signs `POST /v2/payments` with
+    /// `X-HMAC-Signature` and `X-HMAC-Timestamp`. Needed when your platform has Require HMAC on.
+    /// Server-side only. See <https://developer.branta.pro/setup/receive/hmac-signing>.
     pub hmac_secret: Option<String>,
 }
 
 impl BrantaApiOptions {
     pub fn new(environment: BrantaEnvironment) -> Self {
-        #[allow(deprecated)]
-        {
-            Self {
-                environment: Some(environment),
-                api_key: None,
-                hmac_secret: None,
-            }
+        Self {
+            environment: Some(environment),
+            api_key: None,
+            hmac_secret: None,
         }
     }
 
@@ -43,7 +38,6 @@ impl BrantaApiOptions {
             .or(self.api_key.as_deref())
     }
 
-    #[allow(deprecated)]
     pub fn get_hmac_secret<'a>(
         &'a self,
         overrides: Option<&'a BrantaApiOptions>,
@@ -59,7 +53,6 @@ mod tests {
     use super::*;
 
     #[test]
-    #[allow(deprecated)]
     fn override_wins_over_default_field_by_field() {
         let default = BrantaApiOptions {
             api_key: Some("default-key".into()),

@@ -22,7 +22,7 @@ Invariants that break silently. Check them before you change `verify` or `addPay
 - `Destination.id` is sent as `zk_id`. Wire `zk` is always `true`. An unset TTL (`0`) is omitted.
 - `verify` parses first. Multi-value payloads go through `QrParser` whether they came from a scan or a paste.
 - `DestinationType` is only what `add_payment` accepts. It also includes `usdt_tron`, `usdt_ton`, `usdt_solana`, and `usdc_solana`. They can be posted but no URI verifies them, and they are not on the public Destination types page. There is no `usdc_ton`.
-- `BrantaApiOptions` is the constructor argument and the per-call override. A missing environment uses staging. `hmac_secret` is deprecated; a shared `api_key` plus `set_child_platform` is the parent-platform path.
+- `BrantaApiOptions` is the constructor argument and the per-call override. A missing environment uses staging. `hmac_secret` signs `POST /v2/payments` for platforms with Require HMAC on and is not deprecated. For parent platforms, a shared `api_key` plus `set_child_platform` replaces the deprecated per-client HMAC flow.
 - Crypto output must match every sibling SDK byte for byte. The test vector is on the Encryption page. See `src/v2/encryption.rs`.
 - Default HTTP timeout is 30s. No retry logic.
 - Do not reintroduce `PrivacyMode`, `BrantaClientOptions`, `BrantaServerBaseUrl`, or `set_zk`.

@@ -637,7 +637,6 @@ mod tests {
             .mount(&server)
             .await;
 
-        #[allow(deprecated)]
         let opts = {
             let mut opts = options();
             opts.api_key = Some("test-key".to_string());
