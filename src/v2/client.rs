@@ -19,6 +19,10 @@ use crate::options::BrantaApiOptions;
 
 type HmacSha256 = Hmac<Sha256>;
 
+/// Value of the `X-Branta-SDK` header sent on `POST /v2/payments` only. The version comes from
+/// this crate's `Cargo.toml` at compile time, so it cannot drift.
+const SDK_HEADER_VALUE: &str = concat!("rust/", env!("CARGO_PKG_VERSION"));
+
 /// Percent-encode everything except RFC 3986 unreserved characters
 /// (`ALPHA / DIGIT / "-" / "." / "_" / "~"`). Crucially this encodes `+`, `/`, and `=`, which
 /// routinely appear in base64 ciphertext lookup values -- `application/x-www-form-urlencoded`
@@ -266,6 +270,7 @@ impl BrantaClientTrait for BrantaClient {
             .post(format!("{base_url}/v2/payments"))
             .bearer_auth(api_key)
             .header("Content-Type", "application/json; charset=utf-8")
+            .header("X-Branta-SDK", SDK_HEADER_VALUE)
             .body(json.clone());
 
         if let Some((signature, timestamp)) = self.hmac_headers(&base_url, &json, options) {
@@ -605,6 +610,49 @@ mod tests {
         opts.api_key = Some("test-key".to_string());
         let client = BrantaClient::new(opts).with_base_url_override(server.uri());
         client.post_payment(Payment::default(), None).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn post_payment_sends_sdk_header_with_crate_version() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v2/payments"))
+            .respond_with(move |req: &wiremock::Request| {
+                assert_eq!(
+                    req.headers
+                        .get("X-Branta-SDK")
+                        .and_then(|value| value.to_str().ok()),
+                    Some(concat!("rust/", env!("CARGO_PKG_VERSION")))
+                );
+                ResponseTemplate::new(200).set_body_json(Payment::default())
+            })
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mut opts = options();
+        opts.api_key = Some("test-key".to_string());
+        let client = BrantaClient::new(opts).with_base_url_override(server.uri());
+        client.post_payment(Payment::default(), None).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn get_requests_do_not_send_sdk_header() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(move |req: &wiremock::Request| {
+                assert!(!req.headers.contains_key("X-Branta-SDK"));
+                ResponseTemplate::new(200).set_body_json(serde_json::json!([]))
+            })
+            .expect(2)
+            .mount(&server)
+            .await;
+
+        let mut opts = options();
+        opts.api_key = Some("test-key".to_string());
+        let client = BrantaClient::new(opts).with_base_url_override(server.uri());
+        client.get_payments("value", None).await.unwrap();
+        client.is_api_key_valid(None).await.unwrap();
     }
 
     #[tokio::test]
