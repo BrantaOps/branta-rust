@@ -317,6 +317,7 @@ impl BrantaService {
         options: Option<&BrantaApiOptions>,
     ) -> Result<AddPaymentResult, BrantaError> {
         let mut submitted = payment.clone();
+        submitted.normalize_brand();
         fold_description_into_metadata(&mut submitted);
 
         let mut dek = String::new();
@@ -1021,6 +1022,126 @@ mod tests {
         assert_ne!(result.payment.destinations[0].value, "bc1qexample");
         assert!(result.verify_url.contains("#k-resp-id="));
         assert_eq!(result.secret, "11111111-1111-4111-8111-111111111111");
+    }
+
+    struct PostRecorder(std::sync::Arc<Mutex<Vec<Payment>>>);
+
+    #[async_trait]
+    impl BrantaClientTrait for PostRecorder {
+        async fn get_payments<'a>(
+            &'a self,
+            _destination_value: &'a str,
+            _options: Option<&'a BrantaApiOptions>,
+        ) -> Result<Vec<Payment>, BrantaError> {
+            Ok(Vec::new())
+        }
+
+        async fn post_payment<'a>(
+            &'a self,
+            payment: Payment,
+            _options: Option<&'a BrantaApiOptions>,
+        ) -> Result<Option<Payment>, BrantaError> {
+            self.0.lock().unwrap().push(payment.clone());
+            Ok(Some(payment))
+        }
+
+        async fn is_api_key_valid<'a>(
+            &'a self,
+            _options: Option<&'a BrantaApiOptions>,
+        ) -> Result<bool, BrantaError> {
+            Ok(true)
+        }
+    }
+
+    fn recording_service() -> (BrantaService, std::sync::Arc<Mutex<Vec<Payment>>>) {
+        let posts = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let svc = BrantaService::with_deps(
+            BrantaApiOptions::new(BrantaEnvironment::Staging),
+            Box::new(PostRecorder(posts.clone())),
+            Box::new(AesEncryptionService),
+            Box::new(FixedSecret),
+        );
+        (svc, posts)
+    }
+
+    #[tokio::test]
+    #[allow(deprecated)]
+    async fn add_payment_posts_brand_and_leaves_caller_payment_unchanged() {
+        let (svc, posts) = recording_service();
+        let payment = crate::PaymentBuilder::new()
+            .set_brand("Acme", Some("https://example.com/logo.png".into()), None)
+            .add_destination("bc1qexample", Some(DestinationType::BitcoinAddress))
+            .build();
+        let before = payment.clone();
+        let result = svc.add_payment(&payment, None).await.unwrap();
+
+        assert_eq!(payment, before);
+        assert_eq!(payment.destinations[0].value, "bc1qexample");
+        assert!(payment.child_platform.is_none());
+
+        let posted = posts.lock().unwrap()[0].clone();
+        assert_eq!(posted.brand.as_ref().unwrap().name.as_deref(), Some("Acme"));
+        let json = serde_json::to_value(&posted).unwrap();
+        assert_eq!(json["brand"]["name"], "Acme");
+        assert!(json.get("child_platform").is_none());
+        assert_eq!(
+            result.payment.brand.as_ref().unwrap().name.as_deref(),
+            Some("Acme")
+        );
+    }
+
+    #[tokio::test]
+    #[allow(deprecated)]
+    async fn add_payment_normalizes_old_child_platform_into_brand_on_the_copy() {
+        let (svc, posts) = recording_service();
+        let payment = Payment {
+            child_platform: Some(crate::Platform {
+                name: Some("Old".into()),
+                ..crate::Platform::default()
+            }),
+            ..crate::PaymentBuilder::new()
+                .add_destination("bc1qexample", Some(DestinationType::BitcoinAddress))
+                .build()
+        };
+        let before = payment.clone();
+        let result = svc.add_payment(&payment, None).await.unwrap();
+
+        // The caller's Payment keeps exactly the old-style shape.
+        assert_eq!(payment, before);
+        assert!(payment.brand.is_none());
+
+        let posted = posts.lock().unwrap()[0].clone();
+        assert_eq!(posted.brand.as_ref().unwrap().name.as_deref(), Some("Old"));
+        assert_eq!(posted.brand, posted.child_platform);
+        let json = serde_json::to_value(&posted).unwrap();
+        assert_eq!(json["brand"]["name"], "Old");
+        assert!(json.get("child_platform").is_none());
+        assert_eq!(result.payment.brand, posted.brand);
+    }
+
+    #[tokio::test]
+    #[allow(deprecated)]
+    async fn add_payment_prefers_brand_when_both_are_set() {
+        let (svc, posts) = recording_service();
+        let named = |name: &str| crate::Platform {
+            name: Some(name.into()),
+            ..crate::Platform::default()
+        };
+        let payment = Payment {
+            brand: Some(named("New")),
+            child_platform: Some(named("Old")),
+            ..crate::PaymentBuilder::new()
+                .add_destination("bc1qexample", Some(DestinationType::BitcoinAddress))
+                .build()
+        };
+        svc.add_payment(&payment, None).await.unwrap();
+        let posted = posts.lock().unwrap()[0].clone();
+        assert_eq!(posted.brand.as_ref().unwrap().name.as_deref(), Some("New"));
+        assert_eq!(posted.child_platform, posted.brand);
+        assert_eq!(
+            payment.child_platform.as_ref().unwrap().name.as_deref(),
+            Some("Old")
+        );
     }
 
     #[tokio::test]

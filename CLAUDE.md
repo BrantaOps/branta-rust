@@ -23,7 +23,8 @@ Invariants that break silently. Check them before you change `verify` or `addPay
 - `Destination.id` is sent as `zk_id`. Wire `zk` is always `true`. An unset TTL (`0`) is omitted.
 - `verify` parses first. Multi-value payloads go through `QrParser` whether they came from a scan or a paste.
 - `DestinationType` is only what `add_payment` accepts. It also includes `usdt_tron`, `usdt_ton`, `usdt_solana`, and `usdc_solana`. They can be posted but no URI verifies them, and they are not on the public Destination types page. There is no `usdc_ton`.
-- `BrantaApiOptions` is the constructor argument and the per-call override. A missing environment uses staging. `hmac_secret` signs `POST /v2/payments` for platforms with Require HMAC on and is not deprecated. For parent platforms, a shared `api_key` plus `set_child_platform` replaces the deprecated per-client HMAC flow.
+- `BrantaApiOptions` is the constructor argument and the per-call override. A missing environment uses staging. `hmac_secret` signs `POST /v2/payments` for platforms with Require HMAC on and is not deprecated. For parent platforms, a shared `api_key` plus `set_brand` replaces the deprecated per-client HMAC flow.
+- `set_brand` is the method and the wire field is `brand` (`{name, logo_url, logo_light_url}`). `set_child_platform` and `Payment.child_platform` stay only as deprecated aliases: the method delegates to `set_brand`, and `child_platform` is never sent. The effective brand is `brand`, else `child_platform`. A parsed payload accepts either key (`brand` wins) and mirrors it into both fields. Internal code must not call the deprecated names.
 - Crypto output must match every sibling SDK byte for byte. The test vector is on the Encryption page. See `src/v2/encryption.rs`.
 - Default HTTP timeout is 30s. No retry logic.
 - Do not reintroduce `PrivacyMode`, `BrantaClientOptions`, `BrantaServerBaseUrl`, or `set_zk`.

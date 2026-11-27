@@ -28,6 +28,7 @@ async fn main() {
         .set_description("Test description")
         .add_metadata("test_key", "test value")
         .set_ttl(4000)
+        .set_brand("Example Brand", None, None)
         .add_destination("bc1qexample", Some(DestinationType::BitcoinAddress))
         .build();
 

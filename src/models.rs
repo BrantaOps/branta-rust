@@ -126,30 +126,125 @@ fn is_zero(value: &i32) -> bool {
 /// `description` is not a plaintext API field. `add_payment` folds it into
 /// encrypted metadata, and `verify` lifts it back after metadata decrypts.
 /// `parent_platform` is set by the server and is never sent on a POST.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+///
+/// `brand` is the payee a shared-key platform tags a payment with. It is the only brand field
+/// sent on the wire. `child_platform` is the deprecated old name: it is never serialized. The
+/// effective brand is `brand` if set, otherwise `child_platform`. A parsed payload fills `brand`
+/// from `brand` or `child_platform` (`brand` wins) and mirrors it into `child_platform`.
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Payment {
-    #[serde(skip)]
     pub description: Option<String>,
-    #[serde(default)]
     pub destinations: Vec<Destination>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_at: Option<String>,
-    #[serde(default, skip_serializing_if = "is_zero")]
     pub ttl: i32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub platform: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub platform_logo_url: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub platform_logo_light_url: Option<String>,
-    #[serde(default, skip_serializing)]
     pub parent_platform: Option<Platform>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub brand: Option<Platform>,
+    /// Deprecated: use [`Payment::brand`]. Never sent on the wire.
+    #[deprecated(note = "Use brand")]
     pub child_platform: Option<Platform>,
-    #[serde(skip)]
     pub is_metadata_decrypted: bool,
+}
+
+#[allow(deprecated)]
+impl Payment {
+    /// `brand` if set, otherwise the deprecated `child_platform`.
+    pub(crate) fn effective_brand(&self) -> Option<&Platform> {
+        self.brand.as_ref().or(self.child_platform.as_ref())
+    }
+
+    /// Writes the effective brand into both `brand` and the deprecated `child_platform`.
+    pub(crate) fn normalize_brand(&mut self) {
+        let brand = self.effective_brand().cloned();
+        self.brand = brand.clone();
+        self.child_platform = brand;
+    }
+}
+
+/// Borrowed wire shape of a POST body. It never carries `child_platform`.
+#[derive(Serialize)]
+struct PaymentWire<'a> {
+    destinations: &'a [Destination],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    created_at: &'a Option<String>,
+    #[serde(skip_serializing_if = "is_zero")]
+    ttl: &'a i32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    metadata: &'a Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    platform: &'a Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    platform_logo_url: &'a Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    platform_logo_light_url: &'a Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    brand: Option<&'a Platform>,
+}
+
+impl Serialize for Payment {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        PaymentWire {
+            destinations: &self.destinations,
+            created_at: &self.created_at,
+            ttl: &self.ttl,
+            metadata: &self.metadata,
+            platform: &self.platform,
+            platform_logo_url: &self.platform_logo_url,
+            platform_logo_light_url: &self.platform_logo_light_url,
+            brand: self.effective_brand(),
+        }
+        .serialize(serializer)
+    }
+}
+
+/// Parsed shape of a payment payload: accepts both `brand` and `child_platform`.
+#[derive(Deserialize)]
+struct PaymentRaw {
+    #[serde(default)]
+    destinations: Vec<Destination>,
+    #[serde(default)]
+    created_at: Option<String>,
+    #[serde(default)]
+    ttl: i32,
+    #[serde(default)]
+    metadata: Option<String>,
+    #[serde(default)]
+    platform: Option<String>,
+    #[serde(default)]
+    platform_logo_url: Option<String>,
+    #[serde(default)]
+    platform_logo_light_url: Option<String>,
+    #[serde(default)]
+    parent_platform: Option<Platform>,
+    #[serde(default)]
+    brand: Option<Platform>,
+    #[serde(default)]
+    child_platform: Option<Platform>,
+}
+
+#[allow(deprecated)]
+impl<'de> Deserialize<'de> for Payment {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let raw = PaymentRaw::deserialize(deserializer)?;
+        let brand = raw.brand.or(raw.child_platform);
+        Ok(Payment {
+            description: None,
+            destinations: raw.destinations,
+            created_at: raw.created_at,
+            ttl: raw.ttl,
+            metadata: raw.metadata,
+            platform: raw.platform,
+            platform_logo_url: raw.platform_logo_url,
+            platform_logo_light_url: raw.platform_logo_light_url,
+            parent_platform: raw.parent_platform,
+            brand: brand.clone(),
+            child_platform: brand,
+            is_metadata_decrypted: false,
+        })
+    }
 }
 
 /// What [`crate::BrantaService::verify`] returns. `payments` is set only for a match.
@@ -237,5 +332,117 @@ mod tests {
         };
         let json = serde_json::to_value(&payment).unwrap();
         assert_eq!(json["ttl"], 600);
+    }
+
+    fn platform(name: &str) -> Platform {
+        Platform {
+            name: Some(name.into()),
+            logo_url: Some(format!("https://example.com/{name}.png")),
+            logo_light_url: Some(format!("https://example.com/{name}-light.png")),
+        }
+    }
+
+    #[test]
+    fn payment_sends_brand_wire_body() {
+        let payment = Payment {
+            brand: Some(platform("Acme")),
+            ..Payment::default()
+        };
+        let json = serde_json::to_value(&payment).unwrap();
+        assert_eq!(
+            json["brand"],
+            serde_json::json!({
+                "name": "Acme",
+                "logo_url": "https://example.com/Acme.png",
+                "logo_light_url": "https://example.com/Acme-light.png",
+            })
+        );
+        assert!(json.get("child_platform").is_none());
+    }
+
+    #[test]
+    fn brand_omits_unset_keys() {
+        let payment = Payment {
+            brand: Some(Platform {
+                name: Some("Acme".into()),
+                ..Platform::default()
+            }),
+            ..Payment::default()
+        };
+        let json = serde_json::to_value(&payment).unwrap();
+        assert_eq!(json["brand"], serde_json::json!({ "name": "Acme" }));
+    }
+
+    #[test]
+    fn payment_without_brand_omits_the_key() {
+        let json = serde_json::to_value(Payment::default()).unwrap();
+        assert!(json.get("brand").is_none());
+        assert!(json.get("child_platform").is_none());
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn deprecated_child_platform_alone_serializes_as_brand() {
+        let payment = Payment {
+            child_platform: Some(platform("Old")),
+            ..Payment::default()
+        };
+        let json = serde_json::to_value(&payment).unwrap();
+        assert_eq!(json["brand"]["name"], "Old");
+        assert_eq!(json["brand"]["logo_url"], "https://example.com/Old.png");
+        assert!(json.get("child_platform").is_none());
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn brand_wins_over_child_platform_on_serialize() {
+        let payment = Payment {
+            brand: Some(platform("New")),
+            child_platform: Some(platform("Old")),
+            ..Payment::default()
+        };
+        let json = serde_json::to_value(&payment).unwrap();
+        assert_eq!(json["brand"]["name"], "New");
+        assert!(json.get("child_platform").is_none());
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn parses_brand_and_mirrors_into_child_platform() {
+        let payment: Payment =
+            serde_json::from_str(r#"{"brand":{"name":"New","logo_url":"https://x/y.png"}}"#)
+                .unwrap();
+        assert_eq!(payment.brand.as_ref().unwrap().name.as_deref(), Some("New"));
+        assert_eq!(payment.brand, payment.child_platform);
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn parses_child_platform_into_brand_and_keeps_old_field() {
+        let payment: Payment =
+            serde_json::from_str(r#"{"child_platform":{"name":"Old"}}"#).unwrap();
+        assert_eq!(payment.brand.as_ref().unwrap().name.as_deref(), Some("Old"));
+        assert_eq!(payment.brand, payment.child_platform);
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn parsing_both_prefers_brand() {
+        let payment: Payment =
+            serde_json::from_str(r#"{"child_platform":{"name":"Old"},"brand":{"name":"New"}}"#)
+                .unwrap();
+        assert_eq!(payment.brand.as_ref().unwrap().name.as_deref(), Some("New"));
+        assert_eq!(
+            payment.child_platform.as_ref().unwrap().name.as_deref(),
+            Some("New")
+        );
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn null_brand_falls_back_to_child_platform() {
+        let payment: Payment =
+            serde_json::from_str(r#"{"brand":null,"child_platform":{"name":"Old"}}"#).unwrap();
+        assert_eq!(payment.brand.as_ref().unwrap().name.as_deref(), Some("Old"));
     }
 }
