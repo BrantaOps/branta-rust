@@ -42,7 +42,7 @@ Invariants that break silently. Check them before you change `verify` or `addPay
 - Build: `cargo build`
 - Test: `cargo test`
 - Live integration tests: `BRANTA_RUN_INTEGRATION=1 cargo test --test integration_test`
-- Live multi-rail write: `BRANTA_RUN_INTEGRATION=1 BRANTA_API_KEY=… cargo test --test integration_test staging_secret_key_round_trip`
+- Live staging write tests: `BRANTA_RUN_INTEGRATION=1 BRANTA_API_KEY=… cargo test --test integration_test staging_`. This runs `staging_bitcoin_round_trip`, `staging_evm_round_trip`, `staging_post_only_rails_encrypt`, and `staging_live_combos`, plus the read-only `staging_example_qr_codes`.
 - Lint: `cargo clippy --all-targets -- -D warnings`
 - Format: `cargo fmt --check`
 - Release: bump `version` in `Cargo.toml`, add a `CHANGELOG.md` entry, `cargo publish`, then tag the release commit `vX.Y.Z` and push the tag. Do not publish until asked.
