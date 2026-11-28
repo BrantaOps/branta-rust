@@ -181,17 +181,15 @@ impl BrantaClient {
             )?;
             check(
                 payment
-                    .child_platform
-                    .as_ref()
+                    .effective_brand()
                     .and_then(|p| p.logo_url.as_deref()),
-                "child_platform.logo_url",
+                "brand.logo_url",
             )?;
             check(
                 payment
-                    .child_platform
-                    .as_ref()
+                    .effective_brand()
                     .and_then(|p| p.logo_light_url.as_deref()),
-                "child_platform.logo_light_url",
+                "brand.logo_light_url",
             )?;
         }
         Ok(())
@@ -494,10 +492,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn get_payments_catches_mismatched_child_platform_logo_url() {
+    async fn get_payments_catches_mismatched_brand_logo_url() {
         let server = MockServer::start().await;
         let payments = vec![Payment {
-            child_platform: Some(Platform {
+            brand: Some(Platform {
                 logo_url: Some("https://evil.example.com/logo.png".to_string()),
                 ..Default::default()
             }),
@@ -514,10 +512,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn get_payments_catches_mismatched_child_platform_logo_light_url() {
+    async fn get_payments_catches_mismatched_brand_logo_light_url() {
         let server = MockServer::start().await;
         let payments = vec![Payment {
-            child_platform: Some(Platform {
+            brand: Some(Platform {
                 logo_light_url: Some("https://evil.example.com/logo-light.png".to_string()),
                 ..Default::default()
             }),
@@ -534,6 +532,90 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn get_payments_catches_mismatched_logo_in_raw_child_platform_payload() {
+        let server = MockServer::start().await;
+        let body = serde_json::json!([
+            { "child_platform": { "logo_url": "https://evil.example.com/logo.png" } }
+        ]);
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server);
+        let result = client.get_payments("value", None).await;
+        assert!(matches!(result, Err(BrantaError::LogoUrlDomainMismatch(_))));
+    }
+
+    #[tokio::test]
+    async fn get_payments_catches_mismatched_logo_in_raw_brand_payload() {
+        let server = MockServer::start().await;
+        let body = serde_json::json!([
+            { "brand": { "logo_light_url": "https://evil.example.com/logo.png" } }
+        ]);
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(&server)
+            .await;
+
+        let client = client_for(&server);
+        let result = client.get_payments("value", None).await;
+        assert!(matches!(result, Err(BrantaError::LogoUrlDomainMismatch(_))));
+    }
+
+    #[tokio::test]
+    #[allow(deprecated)]
+    async fn post_payment_body_sends_brand_and_never_child_platform() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v2/payments"))
+            .respond_with(move |req: &wiremock::Request| {
+                let body: serde_json::Value = serde_json::from_slice(&req.body).unwrap();
+                assert_eq!(
+                    body["brand"],
+                    serde_json::json!({
+                        "name": "Acme",
+                        "logo_url": "https://example.com/logo.png",
+                        "logo_light_url": "https://example.com/logo-light.png",
+                    })
+                );
+                assert!(body.get("child_platform").is_none());
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "child_platform": { "name": "Acme" }
+                }))
+            })
+            .expect(2)
+            .mount(&server)
+            .await;
+
+        let mut opts = options();
+        opts.api_key = Some("test-key".to_string());
+        let client = BrantaClient::new(opts).with_base_url_override(server.uri());
+        let platform = Platform {
+            name: Some("Acme".into()),
+            logo_url: Some("https://example.com/logo.png".into()),
+            logo_light_url: Some("https://example.com/logo-light.png".into()),
+        };
+
+        let via_brand = Payment {
+            brand: Some(platform.clone()),
+            ..Default::default()
+        };
+        let response = client.post_payment(via_brand, None).await.unwrap().unwrap();
+        assert_eq!(
+            response.brand.as_ref().unwrap().name.as_deref(),
+            Some("Acme")
+        );
+        assert_eq!(response.brand, response.child_platform);
+
+        let via_old = Payment {
+            child_platform: Some(platform),
+            ..Default::default()
+        };
+        client.post_payment(via_old, None).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn get_payments_passes_when_logos_match_or_are_absent() {
         let server = MockServer::start().await;
         let matching_logo = format!("{}/logo.png", server.uri());
@@ -546,6 +628,9 @@ mod tests {
                 "parent_platform": { "logo_url": matching_logo, "logo_light_url": matching_logo_light },
                 "child_platform": { "logo_url": matching_logo, "logo_light_url": matching_logo_light },
             },
+            {
+                "brand": { "logo_url": matching_logo, "logo_light_url": matching_logo_light },
+            },
         ]);
         Mock::given(method("GET"))
             .respond_with(ResponseTemplate::new(200).set_body_json(body))
@@ -553,7 +638,7 @@ mod tests {
             .await;
 
         let client = client_for(&server);
-        assert_eq!(client.get_payments("value", None).await.unwrap().len(), 2);
+        assert_eq!(client.get_payments("value", None).await.unwrap().len(), 3);
     }
 
     #[tokio::test]

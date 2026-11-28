@@ -2,8 +2,8 @@
 //! compiles against the public crate root (mirrors the other SDKs' public-API tests).
 
 use branta::{
-    BrantaApiOptions, BrantaEnvironment, BrantaError, BrantaService, DestinationType,
-    PaymentBuilder, VerifyResult, VerifyStatus,
+    BrantaApiOptions, BrantaEnvironment, BrantaError, BrantaService, DestinationType, Payment,
+    PaymentBuilder, Platform, VerifyResult, VerifyStatus,
 };
 
 #[test]
@@ -70,6 +70,20 @@ fn consumer_types_are_reachable() {
         .build();
     assert_eq!(payment.destinations.len(), 1);
 
+    let branded = PaymentBuilder::new()
+        .set_brand("Acme", Some("https://example.com/logo.png".into()), None)
+        .build();
+    let brand: &Platform = branded.brand.as_ref().expect("set_brand writes brand");
+    assert_eq!(brand.name.as_deref(), Some("Acme"));
+    assert_eq!(
+        serde_json::to_value(&branded).unwrap()["brand"]["name"],
+        "Acme"
+    );
+    assert!(serde_json::to_value(&branded)
+        .unwrap()
+        .get("child_platform")
+        .is_none());
+
     let verify = VerifyResult {
         status: VerifyStatus::Unknown,
         payments: Vec::new(),
@@ -111,4 +125,28 @@ fn family_helpers_are_not_reexported_from_lib() {
             "{name} must stay out of the public crate root (src/lib.rs)"
         );
     }
+}
+
+#[test]
+#[allow(deprecated)]
+fn deprecated_child_platform_names_still_work() {
+    let old = PaymentBuilder::new()
+        .set_child_platform("Acme", None, None)
+        .build();
+    assert_eq!(old.brand.as_ref().unwrap().name.as_deref(), Some("Acme"));
+
+    let literal = Payment {
+        child_platform: Some(Platform {
+            name: Some("Acme".into()),
+            ..Platform::default()
+        }),
+        ..Payment::default()
+    };
+    let json = serde_json::to_value(&literal).unwrap();
+    assert_eq!(json["brand"]["name"], "Acme");
+    assert!(json.get("child_platform").is_none());
+
+    let parsed: Payment = serde_json::from_str(r#"{"child_platform":{"name":"Acme"}}"#).unwrap();
+    assert_eq!(parsed.brand.as_ref().unwrap().name.as_deref(), Some("Acme"));
+    assert_eq!(parsed.child_platform, parsed.brand);
 }

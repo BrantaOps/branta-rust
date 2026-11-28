@@ -57,18 +57,31 @@ impl PaymentBuilder {
         self
     }
 
-    pub fn set_child_platform(
+    /// Tags the payment with the brand (payee) it is for: a name plus optional logo source URLs.
+    /// Sent on the wire as `brand`.
+    pub fn set_brand(
         mut self,
         name: impl Into<String>,
         logo_url: Option<String>,
         logo_light_url: Option<String>,
     ) -> Self {
-        self.payment.child_platform = Some(Platform {
+        self.payment.brand = Some(Platform {
             name: Some(name.into()),
             logo_url,
             logo_light_url,
         });
         self
+    }
+
+    /// Deprecated name for [`PaymentBuilder::set_brand`]. It writes `brand`.
+    #[deprecated(since = "4.4.0", note = "Use set_brand")]
+    pub fn set_child_platform(
+        self,
+        name: impl Into<String>,
+        logo_url: Option<String>,
+        logo_light_url: Option<String>,
+    ) -> Self {
+        self.set_brand(name, logo_url, logo_light_url)
     }
 
     pub fn build(self) -> Payment {
@@ -147,23 +160,44 @@ mod tests {
     }
 
     #[test]
-    fn set_child_platform() {
+    fn set_brand() {
         let payment = PaymentBuilder::new()
-            .set_child_platform(
-                "ChildBrand",
+            .set_brand(
+                "Acme",
                 Some("https://example.com/logo.png".to_string()),
                 Some("https://example.com/logo-light.png".to_string()),
             )
             .build();
-        let child = payment.child_platform.unwrap();
-        assert_eq!(child.name.as_deref(), Some("ChildBrand"));
+        let brand = payment.brand.as_ref().unwrap();
+        assert_eq!(brand.name.as_deref(), Some("Acme"));
         assert_eq!(
-            child.logo_url.as_deref(),
+            brand.logo_url.as_deref(),
             Some("https://example.com/logo.png")
         );
         assert_eq!(
-            child.logo_light_url.as_deref(),
+            brand.logo_light_url.as_deref(),
             Some("https://example.com/logo-light.png")
+        );
+        let json = serde_json::to_value(&payment).unwrap();
+        assert_eq!(json["brand"]["name"], "Acme");
+        assert!(json.get("child_platform").is_none());
+    }
+
+    #[test]
+    #[allow(deprecated)]
+    fn set_child_platform_delegates_to_set_brand() {
+        let logo = Some("https://example.com/logo.png".to_string());
+        let light = Some("https://example.com/logo-light.png".to_string());
+        let old = PaymentBuilder::new()
+            .set_child_platform("Acme", logo.clone(), light.clone())
+            .build();
+        let new = PaymentBuilder::new().set_brand("Acme", logo, light).build();
+        assert_eq!(old, new);
+        assert!(old.brand.is_some());
+        assert!(old.child_platform.is_none());
+        assert_eq!(
+            serde_json::to_value(&old).unwrap(),
+            serde_json::to_value(&new).unwrap()
         );
     }
 
