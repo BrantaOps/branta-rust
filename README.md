@@ -67,7 +67,7 @@ let added = service.add_payment(&payment, None).await?;
 
 ### Brand
 
-A platform that signs with a shared `api_key` can tag a payment with the brand (payee) it is for: a name plus optional logo source URLs. The SDK sends it as `brand`, which needs a Branta server that accepts `brand`.
+A platform that signs with a shared `api_key` can tag a payment with the brand (payee) it is for: a name plus optional logo source URLs. The SDK sends it as `brand`.
 
 ```rust
 let payment = PaymentBuilder::new()
